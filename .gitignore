@@ -1,0 +1,16 @@
+.env
+.env.local
+.env.production
+*.pyc
+__pycache__/
+.index_cache/
+.chroma_db/
+.streamlit/secrets.toml
+.DS_Store
+Thumbs.db
+*.log
+.venv/
+venv/
+
+# Keep PDFs in git for production deploy (remove lines below if files are too large)
+# data_source/*.pdf

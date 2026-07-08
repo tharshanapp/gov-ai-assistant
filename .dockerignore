@@ -1,0 +1,15 @@
+.env
+.env.local
+venv/
+__pycache__/
+*.pyc
+.index_cache/
+.streamlit/secrets.toml
+.git/
+.gitignore
+README.md
+DEPLOY.md
+SETUP-GUIDE.md
+*.md
+.dockerignore
+
