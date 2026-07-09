@@ -242,8 +242,13 @@ def configure_llama_settings(config: dict[str, str]) -> None:
             model=config["groq_model"],
             api_key=config["groq_api_key"],
             api_base="https://api.groq.com/openai/v1",
+            is_chat_model=True,
+            temperature=0.1,
+            max_tokens=2048,
+            context_window=8192,
         )
         Settings.embed_model = FastEmbedEmbedding(model_name=config["fastembed_model"])
+        Settings.node_parser = SentenceSplitter(chunk_size=1024, chunk_overlap=80)
     else:
         from llama_index.embeddings.ollama import OllamaEmbedding
         from llama_index.llms.ollama import Ollama
@@ -511,20 +516,51 @@ def get_vector_index(model_key: str, corpus_fingerprint: str, config_snapshot: t
     return index, [d.metadata["filename"] for d in documents], errors
 
 
+def extract_answer_text(response: Any) -> str:
+    """Normalize LlamaIndex chat response objects to plain text."""
+    if response is None:
+        raise ValueError("AI returned an empty response.")
+
+    if hasattr(response, "response") and response.response:
+        return str(response.response).strip()
+
+    if hasattr(response, "message"):
+        msg = response.message
+        if hasattr(msg, "content") and msg.content:
+            return str(msg.content).strip()
+
+    text = str(response).strip()
+    if not text or text == "None":
+        raise ValueError("AI returned an empty response.")
+    return text
+
+
 def create_chat_engine(index, config: dict[str, str], history: list[dict[str, str]] | None = None):
     from llama_index.core import Settings
-    from llama_index.core.chat_engine import CondensePlusContextChatEngine
+    from llama_index.core.chat_engine import CondensePlusContextChatEngine, ContextChatEngine
     from llama_index.core.llms import ChatMessage, MessageRole
     from llama_index.core.memory import ChatMemoryBuffer
 
     configure_llama_settings(config)
-    memory = ChatMemoryBuffer.from_defaults(token_limit=3900)
+    memory = ChatMemoryBuffer.from_defaults(token_limit=3000)
     for msg in history or []:
         role = MessageRole.USER if msg["role"] == "user" else MessageRole.ASSISTANT
         memory.put(ChatMessage(role=role, content=msg["content"]))
 
+    retriever = index.as_retriever(similarity_top_k=3 if config["provider"] == "groq" else 5)
+
+    # Groq works more reliably with the simpler context chat engine
+    if config["provider"] == "groq":
+        return ContextChatEngine.from_defaults(
+            retriever=retriever,
+            llm=Settings.llm,
+            memory=memory,
+            system_prompt=SYSTEM_PROMPT,
+            verbose=False,
+        )
+
     return CondensePlusContextChatEngine.from_defaults(
-        retriever=index.as_retriever(similarity_top_k=5),
+        retriever=retriever,
         llm=Settings.llm,
         memory=memory,
         system_prompt=SYSTEM_PROMPT,
@@ -819,14 +855,17 @@ def render_chat(config: dict[str, str]) -> None:
             with st.spinner("Searching official documents…"):
                 try:
                     response = st.session_state.chat_engine.chat(prompt)
-                    answer = str(response)
+                    answer = extract_answer_text(response)
                 except Exception as exc:
                     logger.exception("Chat request failed")
                     answer = (
                         "I apologize — a temporary error occurred while processing your request. "
                         "Please try again in a moment. If the issue persists, contact your system administrator."
                     )
-                    st.caption(f"Error detail (admin): {type(exc).__name__}")
+                    if st.session_state.admin_unlocked:
+                        st.caption(f"Error detail (admin): {type(exc).__name__}: {exc}")
+                    else:
+                        st.caption(f"Error detail (admin): {type(exc).__name__}")
 
             st.markdown(format_citation_html(answer), unsafe_allow_html=True)
             st.session_state.messages.append({"role": "assistant", "content": answer})
