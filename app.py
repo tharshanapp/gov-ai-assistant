@@ -186,12 +186,15 @@ def _get_secret(key: str, default: str = "") -> str:
 
 
 def get_config() -> dict[str, str]:
-    provider = _get_secret("AI_PROVIDER", "ollama").lower().strip()
+    provider = _get_secret("AI_PROVIDER", "groq").lower().strip()
     return {
         "provider": provider,
         "openai_api_key": _get_secret("OPENAI_API_KEY"),
         "openai_model": _get_secret("OPENAI_MODEL", "gpt-4o-mini"),
         "embed_model": _get_secret("EMBED_MODEL", "text-embedding-3-small"),
+        "groq_api_key": _get_secret("GROQ_API_KEY"),
+        "groq_model": _get_secret("GROQ_MODEL", "llama-3.1-8b-instant"),
+        "fastembed_model": _get_secret("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5"),
         "ollama_model": _get_secret("OLLAMA_MODEL", "llama3.2"),
         "ollama_embed_model": _get_secret("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
         "ollama_base_url": _get_secret("OLLAMA_BASE_URL", "http://localhost:11434"),
@@ -202,6 +205,8 @@ def get_config() -> dict[str, str]:
 def is_ai_ready(config: dict[str, str]) -> bool:
     if config["provider"] == "openai":
         return bool(config["openai_api_key"])
+    if config["provider"] == "groq":
+        return bool(config["groq_api_key"])
     return ollama_is_running(config["ollama_base_url"])
 
 
@@ -229,6 +234,16 @@ def configure_llama_settings(config: dict[str, str]) -> None:
             api_key=config["openai_api_key"],
             embed_batch_size=8,
         )
+    elif config["provider"] == "groq":
+        from llama_index.embeddings.fastembed import FastEmbedEmbedding
+        from llama_index.llms.openai import OpenAI
+
+        Settings.llm = OpenAI(
+            model=config["groq_model"],
+            api_key=config["groq_api_key"],
+            api_base="https://api.groq.com/openai/v1",
+        )
+        Settings.embed_model = FastEmbedEmbedding(model_name=config["fastembed_model"])
     else:
         from llama_index.embeddings.ollama import OllamaEmbedding
         from llama_index.llms.ollama import Ollama
@@ -247,6 +262,8 @@ def configure_llama_settings(config: dict[str, str]) -> None:
 def model_cache_key(config: dict[str, str]) -> str:
     if config["provider"] == "openai":
         return f"openai:{config['openai_model']}:{config['embed_model']}"
+    if config["provider"] == "groq":
+        return f"groq:{config['groq_model']}:{config['fastembed_model']}"
     return f"ollama:{config['ollama_model']}:{config['ollama_embed_model']}"
 
 
@@ -600,6 +617,9 @@ def render_sidebar(config: dict[str, str], files: list[Path]) -> None:
         if config["provider"] == "openai":
             render_status_badge("OpenAI API Key", bool(config["openai_api_key"]))
             st.caption(f"Model: {config['openai_model']}")
+        elif config["provider"] == "groq":
+            render_status_badge("Groq API Key", bool(config["groq_api_key"]), "Free cloud AI")
+            st.caption(f"Model: {config['groq_model']}")
         else:
             ollama_ok = ollama_is_running(config["ollama_base_url"])
             render_status_badge("Ollama Running", ollama_ok, "Free local AI")
@@ -699,7 +719,11 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
             and FINGERPRINT_FILE.read_text(encoding="utf-8").strip() == cache_fp
         )
 
-        provider_label = "Ollama (local)" if config["provider"] != "openai" else "OpenAI"
+        provider_label = {
+            "openai": "OpenAI",
+            "groq": "Groq (free)",
+            "ollama": "Ollama (local)",
+        }.get(config["provider"], config["provider"])
 
         with st.status(
             "Loading knowledge base from cache…" if cached else "Indexing government documents…",
@@ -709,11 +733,12 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                 st.write("📖 **Step 1/2** — Reading your PDF files…")
                 for path in files:
                     st.caption(f"• {path.name}")
-                st.write(
-                    f"🔄 **Step 2/2** — Indexing with **{provider_label}**.\n\n"
-                    "**First time only:** large manuals can take **10–30 minutes** on Ollama "
-                    "(free, runs on your PC). Keep this tab open."
+                timing = (
+                    "**First time only:** indexing may take **5–15 minutes**. Keep this tab open."
+                    if config["provider"] == "groq"
+                    else "**First time only:** large manuals can take **10–30 minutes** on Ollama. Keep this tab open."
                 )
+                st.write(f"🔄 **Step 2/2** — Indexing with **{provider_label}**.\n\n{timing}")
             else:
                 st.write("✅ Using saved index — no re-indexing needed.")
 
@@ -829,8 +854,13 @@ def main() -> None:
     if not is_ai_ready(config):
         if config["provider"] == "openai":
             st.info(
-                "**Configuration required.** Add your `OPENAI_API_KEY` to `.streamlit/secrets.toml` "
-                "or switch to free local AI: `AI_PROVIDER = \"ollama\"`"
+                "**Configuration required.** Add your `OPENAI_API_KEY` to Streamlit **Secrets** "
+                "or switch to free Groq: `AI_PROVIDER = \"groq\"`"
+            )
+        elif config["provider"] == "groq":
+            st.info(
+                "**Groq API key required.** Get a free key at [console.groq.com](https://console.groq.com), "
+                "then add `GROQ_API_KEY` to Streamlit **Secrets**. See `STREAMLIT-DEPLOY.md`."
             )
         else:
             st.info(

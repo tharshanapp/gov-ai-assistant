@@ -4,7 +4,8 @@ A production-ready Streamlit application that helps public sector officers query
 
 Built with **Streamlit**, **LlamaIndex**, **Ollama** (free), or **OpenAI**.
 
-> **Deploying to the web?** Read **[DEPLOY.md](DEPLOY.md)** — Ollama works on a **cloud VPS**, not Streamlit Community Cloud.
+> **Easiest deploy:** Read **[STREAMLIT-DEPLOY.md](STREAMLIT-DEPLOY.md)** — Streamlit Cloud + free Groq API (no Oracle/VPS).  
+> **VPS deploy:** Read **[DEPLOY.md](DEPLOY.md)** or **[SETUP-GUIDE.md](SETUP-GUIDE.md)** — Ollama on Oracle/Hetzner.
 
 ---
 
