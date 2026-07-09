@@ -235,9 +235,9 @@ def configure_llama_settings(config: dict[str, str]) -> None:
             embed_batch_size=8,
         )
     elif config["provider"] == "groq":
-        from llama_index.embeddings.fastembed import FastEmbedEmbedding
         from llama_index.llms.openai import OpenAI
 
+        Settings.embed_model = _build_groq_embed_model(config)
         Settings.llm = OpenAI(
             model=config["groq_model"],
             api_key=config["groq_api_key"],
@@ -247,7 +247,6 @@ def configure_llama_settings(config: dict[str, str]) -> None:
             max_tokens=2048,
             context_window=8192,
         )
-        Settings.embed_model = FastEmbedEmbedding(model_name=config["fastembed_model"])
         Settings.node_parser = SentenceSplitter(chunk_size=1024, chunk_overlap=80)
     else:
         from llama_index.embeddings.ollama import OllamaEmbedding
@@ -436,12 +435,173 @@ def load_all_documents(files: list[Path]) -> tuple[list, list[str]]:
     return documents, errors
 
 
+MAX_CHARS_PER_DOC = 350_000  # Streamlit Cloud memory limit safeguard
+
+
+def chunk_text_simple(text: str, chunk_size: int = 1200, overlap: int = 150) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    chunks: list[str] = []
+    step = max(chunk_size - overlap, 1)
+    for start in range(0, len(text), step):
+        piece = text[start : start + chunk_size].strip()
+        if piece:
+            chunks.append(piece)
+    return chunks
+
+
+class GroqTfidfChatEngine:
+    """Lightweight Groq RAG for Streamlit Cloud — no heavy embedding models."""
+
+    def __init__(self, config: dict[str, str], chunks: list[str], metadatas: list[dict[str, str]]):
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        self.config = config
+        self.chunks = chunks
+        self.metadatas = metadatas
+        self._cosine_similarity = cosine_similarity
+        self._vectorizer = TfidfVectorizer(
+            max_features=8000,
+            stop_words="english",
+            token_pattern=r"(?u)\b[\w\-]{2,}\b",
+        )
+        try:
+            self._matrix = self._vectorizer.fit_transform(chunks)
+        except ValueError as exc:
+            if "empty vocabulary" not in str(exc).lower():
+                raise
+            self._vectorizer = TfidfVectorizer(max_features=8000, token_pattern=r"(?u)\b[\w\-]{2,}\b")
+            self._matrix = self._vectorizer.fit_transform(chunks)
+        from openai import OpenAI
+
+        self._client = OpenAI(
+            api_key=config["groq_api_key"],
+            base_url="https://api.groq.com/openai/v1",
+        )
+
+    def _retrieve(self, prompt: str, top_k: int = 5) -> list[tuple[str, dict[str, str]]]:
+        query_vec = self._vectorizer.transform([prompt])
+        scores = self._cosine_similarity(query_vec, self._matrix).flatten()
+        ranked = scores.argsort()[::-1][:top_k]
+        results: list[tuple[str, dict[str, str]]] = []
+        for idx in ranked:
+            if scores[idx] <= 0:
+                continue
+            results.append((self.chunks[idx], self.metadatas[idx]))
+        return results
+
+    def chat(self, prompt: str, history: list[dict[str, str]] | None = None) -> str:
+        retrieved = self._retrieve(prompt)
+        if not retrieved:
+            context = "No matching document sections were found."
+            citation_hint = ""
+        else:
+            context_parts = []
+            citation_lines = []
+            seen_citations: set[str] = set()
+            for chunk, meta in retrieved:
+                context_parts.append(chunk)
+                cite = (
+                    f"🏛️ Organization: {meta.get('organization', 'Not explicitly mentioned in text')} | "
+                    f"📅 Year: {meta.get('year', 'Not explicitly mentioned in text')} | "
+                    f"📜 Reference Section: {meta.get('reference_section', 'Not explicitly mentioned in text')}"
+                )
+                if cite not in seen_citations:
+                    seen_citations.add(cite)
+                    citation_lines.append(cite)
+            context = "\n\n---\n\n".join(context_parts)
+            citation_hint = "\n".join(citation_lines)
+
+        user_prompt = (
+            f"Use ONLY the context below from official documents.\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"OFFICER QUESTION:\n{prompt}\n\n"
+            f"Suggested source lines (verify against context):\n{citation_hint}"
+        )
+
+        messages: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for msg in (history or [])[-6:]:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": user_prompt})
+
+        response = self._client.chat.completions.create(
+            model=self.config["groq_model"],
+            messages=messages,
+            temperature=0.1,
+            max_tokens=2048,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("Groq returned an empty response.")
+        return content.strip()
+
+
+@st.cache_resource(show_spinner=False)
+def get_groq_tfidf_engine(corpus_fingerprint: str, config_snapshot: tuple):
+    config = dict(config_snapshot)
+    files = scan_data_source()
+    if not files:
+        return None, [], []
+
+    chunks: list[str] = []
+    metadatas: list[dict[str, str]] = []
+    errors: list[str] = []
+    indexed_files: list[str] = []
+
+    for path in files:
+        payload, err = load_single_document(path)
+        if err:
+            errors.append(f"{path.name}: {err}")
+            continue
+        indexed_files.append(path.name)
+        text = payload["text"][:MAX_CHARS_PER_DOC]
+        meta = payload["metadata"]
+        for piece in chunk_text_simple(text):
+            chunks.append(piece)
+            metadatas.append(meta)
+
+    if not chunks:
+        return None, indexed_files, errors or ["No readable text found in documents."]
+
+    engine = GroqTfidfChatEngine(config, chunks, metadatas)
+    return engine, indexed_files, errors
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     name = type(exc).__name__
     if name in {"RateLimitError", "RateLimitReached", "InsufficientQuotaError"}:
         return True
     msg = str(exc).lower()
     return "rate limit" in msg or "429" in msg or "quota" in msg
+
+
+def _build_groq_embed_model(config: dict[str, str]):
+    """FastEmbed for cloud; HuggingFace fallback if FastEmbed fails on Streamlit."""
+    from llama_index.embeddings.fastembed import FastEmbedEmbedding
+
+    try:
+        return FastEmbedEmbedding(model_name=config["fastembed_model"])
+    except Exception as exc:
+        logger.warning("FastEmbed unavailable (%s); using HuggingFace fallback.", exc)
+        from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
+        return HuggingFaceEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+
+def build_index_for_provider(documents: list, provider: str) -> Any:
+    """Build vector index with provider-specific strategy."""
+    from llama_index.core import VectorStoreIndex
+
+    if provider == "openai":
+        return build_index_resilient(documents, use_openai=True)
+
+    # Groq / Ollama: index one document at a time (lower memory, more stable on cloud)
+    index = VectorStoreIndex.from_documents([documents[0]])
+    for doc in documents[1:]:
+        index.insert(doc)
+    return index
 
 
 def build_index_resilient(documents: list, use_openai: bool) -> Any:
@@ -480,17 +640,26 @@ def build_index_resilient(documents: list, use_openai: bool) -> Any:
 @st.cache_resource(show_spinner=False)
 def get_vector_index(model_key: str, corpus_fingerprint: str, config_snapshot: tuple):
     """Build or load a persisted vector index."""
-    from llama_index.core import StorageContext, load_index_from_storage
+    from llama_index.core import StorageContext, VectorStoreIndex, load_index_from_storage
 
     config = dict(config_snapshot)
     configure_llama_settings(config)
-
-    INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    provider = config["provider"]
 
     files = scan_data_source()
     if not files:
         return None, [], []
 
+    documents, errors = load_all_documents(files)
+    if not documents:
+        return None, [], errors
+
+    # Streamlit Cloud + Groq: always build in-memory (no disk cache — avoids ValueError)
+    if provider == "groq":
+        index = build_index_for_provider(documents, provider)
+        return index, [d.metadata["filename"] for d in documents], errors
+
+    INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_fp = f"{corpus_fingerprint}:{model_key}"
     if (
         FINGERPRINT_FILE.exists()
@@ -503,13 +672,9 @@ def get_vector_index(model_key: str, corpus_fingerprint: str, config_snapshot: t
             return index, [p.name for p in files], []
         except Exception:
             logger.warning("Could not load saved index; rebuilding.")
+            shutil.rmtree(PERSIST_DIR, ignore_errors=True)
 
-    documents, errors = load_all_documents(files)
-    if not documents:
-        return None, [], errors
-
-    use_openai = config["provider"] == "openai"
-    index = build_index_resilient(documents, use_openai=use_openai)
+    index = build_index_for_provider(documents, provider)
     index.storage_context.persist(persist_dir=str(PERSIST_DIR))
     FINGERPRINT_FILE.write_text(cache_fp, encoding="utf-8")
 
@@ -711,6 +876,7 @@ def render_sidebar(config: dict[str, str], files: list[Path]) -> None:
 
             if st.button("🔨 Rebuild Knowledge Base", use_container_width=True):
                 get_vector_index.clear()
+                get_groq_tfidf_engine.clear()
                 reset_conversation()
                 st.session_state.corpus_fingerprint = ""
                 if INDEX_CACHE_DIR.exists():
@@ -770,13 +936,31 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                 for path in files:
                     st.caption(f"• {path.name}")
                 timing = (
-                    "**First time only:** indexing may take **5–15 minutes**. Keep this tab open."
+                    "**First time only:** indexing usually takes **1–3 minutes** on Streamlit Cloud."
                     if config["provider"] == "groq"
                     else "**First time only:** large manuals can take **10–30 minutes** on Ollama. Keep this tab open."
                 )
                 st.write(f"🔄 **Step 2/2** — Indexing with **{provider_label}**.\n\n{timing}")
             else:
                 st.write("✅ Using saved index — no re-indexing needed.")
+
+            if config["provider"] == "groq":
+                engine, indexed_files, errors = get_groq_tfidf_engine(
+                    fingerprint,
+                    config_snapshot(config),
+                )
+                st.session_state.ingest_errors = errors
+                st.session_state.indexed_files = indexed_files
+                st.session_state.corpus_fingerprint = fingerprint
+                if engine is None:
+                    st.session_state.chat_engine = None
+                    status.update(label="Indexing failed", state="error")
+                    detail = "; ".join(errors[:3]) if errors else "No readable text in documents."
+                    st.error(f"Unable to build the knowledge base. {detail}")
+                    return False
+                st.session_state.chat_engine = engine
+                status.update(label="Indexing complete — ready to chat", state="complete")
+                return True
 
             index, indexed_files, errors = get_vector_index(
                 mkey,
@@ -824,8 +1008,18 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                 """
             )
         else:
-            st.error(
-                f"Unable to initialize the knowledge base. Please contact your administrator. ({type(exc).__name__})"
+            st.error(f"Unable to initialize the knowledge base. ({type(exc).__name__})")
+            st.caption(str(exc)[:500])
+            if st.session_state.admin_unlocked:
+                st.code(str(exc))
+            st.markdown(
+                """
+                **Try these fixes:**
+                1. Streamlit Cloud → **Manage app** → **Reboot app**
+                2. Sidebar (Admin) → **Rebuild Knowledge Base**
+                3. Confirm Secrets: `AI_PROVIDER = "groq"` and valid `GROQ_API_KEY`
+                4. Push latest code from GitHub, then reboot again
+                """
             )
         return False
 
@@ -854,8 +1048,14 @@ def render_chat(config: dict[str, str]) -> None:
         with st.chat_message("assistant"):
             with st.spinner("Searching official documents…"):
                 try:
-                    response = st.session_state.chat_engine.chat(prompt)
-                    answer = extract_answer_text(response)
+                    if config["provider"] == "groq" and hasattr(st.session_state.chat_engine, "chat"):
+                        answer = st.session_state.chat_engine.chat(
+                            prompt,
+                            history=st.session_state.messages[:-1],
+                        )
+                    else:
+                        response = st.session_state.chat_engine.chat(prompt)
+                        answer = extract_answer_text(response)
                 except Exception as exc:
                     logger.exception("Chat request failed")
                     answer = (
