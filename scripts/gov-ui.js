@@ -3,6 +3,7 @@
   const ROOT = window.parent && window.parent.document ? window.parent : window;
   const DOC = ROOT.document;
   const WIN = ROOT;
+  const SIDEBAR_KEY = "gov-sidebar-state";
 
   if (WIN.__govKnowledgeUiBooted) return;
   WIN.__govKnowledgeUiBooted = true;
@@ -64,57 +65,97 @@
     ).forEach((el) => {
       if (el.dataset.govSidebarHidden === "1") return;
       el.dataset.govSidebarHidden = "1";
+      el.style.setProperty("display", "none", "important");
+      el.style.setProperty("visibility", "hidden", "important");
       el.style.setProperty("opacity", "0", "important");
-      el.style.setProperty("width", "0", "important");
-      el.style.setProperty("height", "0", "important");
-      el.style.setProperty("overflow", "hidden", "important");
       el.style.setProperty("pointer-events", "none", "important");
-      el.style.setProperty("position", "absolute", "important");
-      el.style.setProperty("left", "-9999px", "important");
     });
   }
 
   function isSidebarCollapsed() {
+    if (DOC.documentElement.classList.contains("gov-sidebar-hidden")) return true;
+    if (DOC.documentElement.classList.contains("gov-sidebar-force-show")) return false;
+
     const sidebar = DOC.querySelector('section[data-testid="stSidebar"]');
     if (sidebar) {
+      if (sidebar.getAttribute("aria-expanded") === "false") return true;
       const rect = sidebar.getBoundingClientRect();
-      if (rect.width < 12) return true;
-    }
-    const expand = DOC.querySelector('[data-testid="collapsedControl"], [data-testid="stSidebarCollapsedControl"]');
-    if (expand) {
-      const r = expand.getBoundingClientRect();
-      if (r.width > 4 && r.height > 4) return true;
+      if (rect.width < 24) return true;
     }
     return false;
   }
 
-  function clickCollapse() {
-    const selectors = [
-      '[data-testid="stSidebarCollapseButton"]',
-      'section[data-testid="stSidebar"] button[kind="header"]',
-      'button[aria-label="Collapse sidebar"]',
-      'button[aria-label*="Close sidebar"]',
-    ];
-    for (const sel of selectors) {
-      const el = DOC.querySelector(sel);
-      if (el) { el.click(); return true; }
-    }
-    return false;
+  function saveSidebarState(open) {
+    try {
+      WIN.sessionStorage.setItem(SIDEBAR_KEY, open ? "open" : "closed");
+    } catch (e) {}
   }
 
-  function clickExpand() {
-    const selectors = [
-      '[data-testid="collapsedControl"] button',
-      '[data-testid="collapsedControl"]',
+  function showSidebar() {
+    DOC.documentElement.classList.remove("gov-sidebar-hidden");
+    DOC.documentElement.classList.add("gov-sidebar-force-show");
+    saveSidebarState(true);
+    tryNativeToggle(true);
+  }
+
+  function hideSidebar() {
+    DOC.documentElement.classList.remove("gov-sidebar-force-show");
+    DOC.documentElement.classList.add("gov-sidebar-hidden");
+    saveSidebarState(false);
+    tryNativeToggle(false);
+  }
+
+  function forceNativeClick(el) {
+    const target = el && el.tagName === "BUTTON" ? el : (el && el.querySelector("button")) || el;
+    if (!target) return false;
+    const opts = { bubbles: true, cancelable: true, view: WIN };
+    try { target.focus(); } catch (e) {}
+    target.dispatchEvent(new PointerEvent("pointerdown", opts));
+    target.dispatchEvent(new MouseEvent("mousedown", opts));
+    target.dispatchEvent(new PointerEvent("pointerup", opts));
+    target.dispatchEvent(new MouseEvent("mouseup", opts));
+    target.dispatchEvent(new MouseEvent("click", opts));
+    return true;
+  }
+
+  function tryNativeToggle(wantOpen) {
+    const expandSelectors = [
       '[data-testid="stSidebarCollapsedControl"] button',
       '[data-testid="stSidebarCollapsedControl"]',
-      'button[aria-label="Open sidebar"]',
+      '[data-testid="collapsedControl"] button',
+      '[data-testid="collapsedControl"]',
+      'button[aria-label*="Open sidebar" i]',
+      'button[aria-label*="Expand sidebar" i]',
     ];
+    const collapseSelectors = [
+      '[data-testid="stSidebarCollapseButton"]',
+      'section[data-testid="stSidebar"] button[kind="header"]',
+      'button[aria-label*="Close sidebar" i]',
+      'button[aria-label*="Collapse sidebar" i]',
+    ];
+    const selectors = wantOpen ? expandSelectors : collapseSelectors;
     for (const sel of selectors) {
       const el = DOC.querySelector(sel);
-      if (el) { el.click(); return true; }
+      if (el && forceNativeClick(el)) return true;
     }
     return false;
+  }
+
+  function applySavedSidebarState() {
+    try {
+      const saved = WIN.sessionStorage.getItem(SIDEBAR_KEY);
+      if (saved === "open") {
+        DOC.documentElement.classList.remove("gov-sidebar-hidden");
+        DOC.documentElement.classList.add("gov-sidebar-force-show");
+      } else if (saved === "closed") {
+        DOC.documentElement.classList.remove("gov-sidebar-force-show");
+        DOC.documentElement.classList.add("gov-sidebar-hidden");
+      }
+    } catch (e) {}
+  }
+
+  function restoreSidebarState() {
+    applySavedSidebarState();
   }
 
   function updateSidebarToggle() {
@@ -128,9 +169,16 @@
       btn.style.left = "0";
     } else {
       const sidebar = DOC.querySelector('section[data-testid="stSidebar"]');
-      const left = sidebar ? Math.max(sidebar.getBoundingClientRect().right - 14, 0) : 0;
+      const left = sidebar ? Math.max(sidebar.getBoundingClientRect().right - 15, 0) : 0;
       btn.style.left = left + "px";
     }
+  }
+
+  function toggleSidebar() {
+    if (isSidebarCollapsed()) showSidebar();
+    else hideSidebar();
+    setTimeout(updateSidebarToggle, 80);
+    setTimeout(updateSidebarToggle, 350);
   }
 
   function ensureSidebarToggle() {
@@ -139,14 +187,15 @@
       btn = DOC.createElement("button");
       btn.id = "gov-sidebar-toggle";
       btn.type = "button";
-      btn.addEventListener("click", () => {
-        if (isSidebarCollapsed()) clickExpand();
-        else clickCollapse();
-        setTimeout(updateSidebarToggle, 200);
-        setTimeout(updateSidebarToggle, 500);
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebar();
       });
       DOC.body.appendChild(btn);
+      restoreSidebarState();
     }
+    applySavedSidebarState();
     hideNativeSidebarControls();
     updateSidebarToggle();
   }
@@ -199,12 +248,23 @@
       #gov-share-open{font-family:Source Sans 3,sans-serif;font-size:0.82rem;font-weight:700;
       padding:0.42rem 1rem;border-radius:999px;border:1.5px solid #C9A227;cursor:pointer;
       background:linear-gradient(135deg,#1A2B4A,#2C4A7C);color:#fff;box-shadow:0 2px 12px rgba(26,43,74,.18)}
-      #gov-sidebar-toggle{position:fixed;top:50%;transform:translateY(-50%);left:0;z-index:999993;
+      #gov-sidebar-toggle{position:fixed;top:50%;transform:translateY(-50%);left:0;z-index:999995;
       font-family:Source Sans 3,sans-serif;font-size:0.95rem;font-weight:700;width:30px;height:52px;
       padding:0;border:1px solid #D4DCE8;border-radius:0 8px 8px 0;cursor:pointer;
       background:linear-gradient(135deg,#1A2B4A,#2C4A7C);color:#fff;
       box-shadow:2px 0 12px rgba(26,43,74,.18);transition:left .2s ease;line-height:1}
       #gov-sidebar-toggle:hover{background:#2C4A7C;border-color:#C9A227}
+      html.gov-sidebar-hidden section[data-testid="stSidebar"]{
+      transform:translateX(-110%)!important;min-width:0!important;max-width:0!important;width:0!important;
+      overflow:hidden!important;opacity:0!important;visibility:hidden!important;pointer-events:none!important}
+      html.gov-sidebar-force-show section[data-testid="stSidebar"]{
+      display:block!important;transform:none!important;min-width:21rem!important;width:21rem!important;
+      max-width:21rem!important;opacity:1!important;visibility:visible!important;pointer-events:auto!important;
+      position:relative!important;left:0!important;margin-left:0!important}
+      html.gov-sidebar-force-show section[data-testid="stSidebar"] > div{
+      width:21rem!important;max-width:21rem!important}
+      [data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"],[data-testid="stSidebarCollapseButton"]{
+      display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important}
       #gov-share-modal{position:fixed;inset:0;z-index:999999;display:none;align-items:center;justify-content:center}
       #gov-share-modal.open{display:flex}
       #gov-share-backdrop{position:absolute;inset:0;background:rgba(26,43,74,.45)}
@@ -226,9 +286,8 @@
       #gov-share-footer{display:flex;justify-content:flex-end;padding:0.85rem 1.25rem;border-top:1px solid #D4DCE8}
       #gov-copy-link{background:none;border:none;color:#2C4A7C;font-weight:700;cursor:pointer;font-size:0.88rem}
       #gov-share-close{position:absolute;top:0.55rem;right:0.75rem;border:none;background:none;font-size:1.2rem;cursor:pointer;color:#6B7A90}
-      [data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"],[data-testid="stSidebarCollapseButton"]{
-      opacity:0!important;width:0!important;height:0!important;overflow:hidden!important;
-      pointer-events:none!important;position:absolute!important;left:-9999px!important}
+      [data-testid="stToolbar"],#MainMenu,a[href*="github.com"],a[href*="streamlit.io"]{
+      display:none!important;visibility:hidden!important;pointer-events:none!important}
     `;
     DOC.head.appendChild(style);
   }

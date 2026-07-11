@@ -241,13 +241,32 @@ header[data-testid="stHeader"] {
 [data-testid="stSidebarCollapseButton"],
 [data-testid="collapsedControl"] button,
 [data-testid="stSidebarCollapsedControl"] button {
+    display: none !important;
+    visibility: hidden !important;
     opacity: 0 !important;
-    width: 0 !important;
-    height: 0 !important;
-    overflow: hidden !important;
     pointer-events: none !important;
-    position: absolute !important;
-    left: -9999px !important;
+}
+
+/* Custom sidebar show/hide (controlled by gov-ui.js) */
+html.gov-sidebar-hidden section[data-testid="stSidebar"] {
+    transform: translateX(-110%) !important;
+    min-width: 0 !important;
+    max-width: 0 !important;
+    width: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+html.gov-sidebar-force-show section[data-testid="stSidebar"] {
+    display: block !important;
+    transform: none !important;
+    min-width: 21rem !important;
+    width: 21rem !important;
+    max-width: 21rem !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
 }
 
 /* Sidebar styling */
