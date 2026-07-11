@@ -276,6 +276,33 @@ section[data-testid="stSidebar"] .block-container {
 
 /* Hide Streamlit branding footer on Community Cloud */
 footer { visibility: hidden; }
+
+/* Hide GitHub, Fork, and repo links injected by Streamlit Community Cloud */
+#GithubIcon,
+#MainMenu,
+[data-testid="stToolbar"] a[href*="github.com"],
+[data-testid="stHeader"] a[href*="github.com"],
+.stApp a[href*="github.com"],
+.stApp a[href*="github.com/"],
+a[title="View app source"],
+a[title="Fork this app"],
+button[title="View app source"],
+button[title="Fork this app"],
+[class*="viewerBadge"],
+[class*="styles_viewerBadge"],
+.viewerBadge_container__1QSob,
+.viewerBadge_link__1S137,
+.viewerBadge_text__1JaDK {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    height: 0 !important;
+    width: 0 !important;
+    max-height: 0 !important;
+    max-width: 0 !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+}
 </style>
 """
 
@@ -1591,6 +1618,11 @@ def main() -> None:
         page_icon="🏛️",
         layout="wide",
         initial_sidebar_state="expanded",
+        menu_items={
+            "Get help": None,
+            "Report a bug": None,
+            "About": None,
+        },
     )
     st.markdown(GOVERNMENT_CSS, unsafe_allow_html=True)
 
