@@ -77,21 +77,26 @@ html, body, [class*="css"] {
 }
 
 .main .block-container {
-    padding-top: 0.5rem !important;
+    padding-top: 0 !important;
     padding-bottom: 3rem;
     max-width: 920px;
 }
 
 /* Tighten gap between top menu bar and main content */
 header[data-testid="stHeader"] {
-    height: 2.5rem !important;
-    min-height: 2.5rem !important;
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 0.15rem 0 0.1rem 0 !important;
+    margin-bottom: 0 !important;
 }
 [data-testid="stToolbar"] {
-    top: 0.35rem !important;
+    top: 0.25rem !important;
 }
 [data-testid="stAppViewContainer"] > .main {
-    padding-top: 0.25rem;
+    padding-top: 0 !important;
+}
+[data-testid="stMainBlockContainer"] {
+    padding-top: 0.15rem !important;
 }
 
 /* Hero header */
@@ -100,9 +105,9 @@ header[data-testid="stHeader"] {
     background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
     border-left: 6px solid var(--gov-gold);
     border-radius: 0 12px 12px 0;
-    padding: 1.15rem 2rem 1.2rem 2rem;
+    padding: 0.9rem 2rem 1rem 2rem;
     margin-top: 0;
-    margin-bottom: 1.25rem;
+    margin-bottom: 1rem;
     box-shadow: 0 4px 20px rgba(26, 43, 74, 0.15);
 }
 .gov-header h1 {
@@ -326,7 +331,10 @@ footer { visibility: hidden; }
 
 /* Streamlit Cloud: hide GitHub + pencil/edit only (keep share & star) */
 .stApp header a[href*="github.com"],
+.stApp header a[href*="github.dev"],
 .stApp [data-testid="stHeader"] a[href*="github.com"],
+.stApp [data-testid="stHeader"] a[href*="github.dev"],
+.stApp [data-testid="stHeader"] a[href*="/edit"],
 .stApp a[href*="github.com"][target="_blank"],
 .stApp a[title*="GitHub"],
 .stApp a[title*="github"],
@@ -335,19 +343,36 @@ footer { visibility: hidden; }
 .stApp a[title*="View app source"],
 .stApp a[title*="Fork"],
 .stApp a[aria-label*="Fork"],
+.stApp a[title*="Edit"],
+.stApp a[aria-label*="Edit"],
 .stApp a[href*="share.streamlit.io/edit"],
 .stApp a[href*="share.streamlit.io/manage"],
 .stApp button[title*="GitHub"],
 .stApp button[title*="View app source"],
 .stApp button[title*="Fork"],
+.stApp button[title*="Edit"],
 #GithubIcon,
-[class*="viewerBadge_link"] {
+[class*="viewerBadge_link"],
+[class*="viewerBadge_container"] {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
     width: 0 !important;
     height: 0 !important;
     overflow: hidden !important;
+    opacity: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* Fallback: hide last two header icons (pencil + GitHub), keep Share & Star */
+[data-testid="stHeader"] a:nth-last-child(1),
+[data-testid="stHeader"] a:nth-last-child(2) {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
     opacity: 0 !important;
 }
 </style>
@@ -1261,70 +1286,83 @@ def render_header() -> None:
 
 
 def inject_cloud_toolbar_guard() -> None:
-    """Hide GitHub/pencil links via JS; keep share & star buttons visible."""
-    st.components.v1.html(
-        """
-        <script>
-        (() => {
-          const HIDE_URL_PARTS = ["github.com", "github.dev", "/edit", "/manage"];
-          const HIDE_LABEL_PARTS = [
-            "github", "view app source", "view source", "fork",
-            "open in editor", "edit app", "manage app", "open github"
-          ];
-          const KEEP_LABEL_PARTS = ["share", "star", "favorite", "bookmark"];
+    """Hide GitHub/pencil in Streamlit header; keep Share & Star visible."""
+    guard_script = """
+    (function () {
+      const KEEP = ["share", "star", "favorite", "bookmark"];
 
-          const labelOf = (el) => (
-            (el.getAttribute("aria-label") || "") + " " +
-            (el.getAttribute("title") || "") + " " +
-            (el.textContent || "")
-          ).toLowerCase();
+      function labelOf(el) {
+        return (
+          (el.getAttribute("aria-label") || "") + " " +
+          (el.getAttribute("title") || "") + " " +
+          (el.textContent || "")
+        ).toLowerCase();
+      }
 
-          const shouldHide = (el) => {
-            if (!el || el.classList?.contains("gov-site-fab")) return false;
-            const href = (el.href || el.getAttribute("href") || "").toLowerCase();
-            const label = labelOf(el);
+      function shouldKeep(el) {
+        return KEEP.some((k) => labelOf(el).includes(k));
+      }
 
-            if (KEEP_LABEL_PARTS.some((k) => label.includes(k))) return false;
-            if (HIDE_URL_PARTS.some((k) => href.includes(k))) return true;
-            if (HIDE_LABEL_PARTS.some((k) => label.includes(k))) return true;
-            if (href.includes("share.streamlit.io") && !label.includes("share")) return true;
-            return false;
-          };
+      function shouldHide(el) {
+        if (!el || el.classList.contains("gov-site-fab")) return false;
+        if (shouldKeep(el)) return false;
+        const href = (el.href || el.getAttribute("href") || "").toLowerCase();
+        const label = labelOf(el);
+        if (href.includes("github.com") || href.includes("github.dev")) return true;
+        if (href.includes("/edit") || href.includes("openeditor")) return true;
+        if (label.includes("github") || label.includes("view source")) return true;
+        if (label.includes("fork") || label.includes("edit app")) return true;
+        if (href.includes("share.streamlit.io") && !label.includes("share")) return true;
+        return false;
+      }
 
-          const hideUnwanted = (root) => {
-            root.querySelectorAll("a, button, [role='button']").forEach((el) => {
-              if (!shouldHide(el)) return;
-              el.style.setProperty("display", "none", "important");
-              el.style.setProperty("visibility", "hidden", "important");
-              el.style.setProperty("pointer-events", "none", "important");
-              el.setAttribute("aria-hidden", "true");
-              el.tabIndex = -1;
-            });
-          };
+      function hideEl(el) {
+        el.style.setProperty("display", "none", "important");
+        el.style.setProperty("visibility", "hidden", "important");
+        el.style.setProperty("pointer-events", "none", "important");
+        el.style.setProperty("width", "0", "important");
+        el.style.setProperty("height", "0", "important");
+        el.style.setProperty("margin", "0", "important");
+        el.style.setProperty("padding", "0", "important");
+        el.setAttribute("aria-hidden", "true");
+      }
 
-          const run = () => {
-            hideUnwanted(document);
-            try {
-              if (window.parent && window.parent.document) {
-                hideUnwanted(window.parent.document);
-              }
-            } catch (e) {
-              /* cross-origin parent — expected on some hosts */
-            }
-          };
+      function scrub(doc) {
+        if (!doc) return;
+        doc.querySelectorAll('[data-testid="stHeader"] a, header a, header button').forEach((el) => {
+          if (shouldHide(el)) hideEl(el);
+        });
+        doc.querySelectorAll('a[href*="github.com"], a[href*="github.dev"]').forEach((el) => {
+          if (!shouldKeep(el)) hideEl(el);
+        });
+        doc.querySelectorAll("a, button, [role='button']").forEach((el) => {
+          if (shouldHide(el)) hideEl(el);
+        });
+      }
 
-          run();
-          new MutationObserver(run).observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-          });
-          setInterval(run, 1200);
-        })();
-        </script>
-        """,
-        height=0,
-        width=0,
-    )
+      function boot(doc) {
+        if (!doc || doc.getElementById("gov-hide-github-pencil")) return;
+        const runner = doc.createElement("script");
+        runner.id = "gov-hide-github-pencil";
+        runner.type = "text/javascript";
+        runner.text = `
+          (function(){
+            ${scrub.toString()}
+            scrub(document);
+            setInterval(function(){ scrub(document); }, 400);
+            new MutationObserver(function(){ scrub(document); })
+              .observe(document.documentElement, {childList:true, subtree:true});
+          })();
+        `;
+        doc.head.appendChild(runner);
+      }
+
+      try { boot(document); } catch (e) {}
+      try { boot(window.parent.document); scrub(window.parent.document); } catch (e) {}
+      try { boot(window.top.document); scrub(window.top.document); } catch (e) {}
+    })();
+    """
+    st.components.v1.html(f"<script>{guard_script}</script>", height=0, width=0)
 
 
 def render_footer() -> None:
