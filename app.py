@@ -5,6 +5,7 @@ Streamlit + LlamaIndex + Ollama (free) or OpenAI
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import logging
 import os
@@ -141,6 +142,36 @@ html, body, [class*="css"] {
 }
 .citation-box strong {
     color: var(--gov-navy);
+}
+
+/* Source document panel */
+.source-docs-header {
+    font-family: 'Source Serif 4', serif;
+    color: var(--gov-navy);
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 1rem 0 0.5rem 0;
+}
+.source-doc-meta {
+    color: #4A5568;
+    font-size: 0.88rem;
+    margin-bottom: 0.75rem;
+}
+
+.query-panel {
+    background: #F8F9FB;
+    border: 1px solid var(--gov-border);
+    border-radius: 12px;
+    padding: 1rem 1.25rem 0.5rem 1.25rem;
+    margin-bottom: 1.25rem;
+}
+.query-panel label {
+    font-weight: 600;
+    color: var(--gov-navy);
+}
+.query-row [data-testid="column"] {
+    display: flex;
+    align-items: flex-end;
 }
 
 /* Chat bubbles */
@@ -338,19 +369,60 @@ def scan_data_source() -> list[Path]:
     return files
 
 
+def _extract_pdf_with_pypdf(path: Path) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(str(path))
+    pages = []
+    for page in reader.pages:
+        text = page.extract_text()
+        if text and text.strip():
+            pages.append(text)
+    return "\n\n".join(pages)
+
+
+def _extract_pdf_with_ocr(path: Path) -> str:
+    """OCR fallback for scanned/image-only PDFs (no embedded text layer)."""
+    import fitz
+    import numpy as np
+    from rapidocr_onnxruntime import RapidOCR
+
+    ocr = RapidOCR()
+    doc = fitz.open(str(path))
+    parts: list[str] = []
+    try:
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            if pix.n == 4:
+                img = img[:, :, :3]
+            result, _ = ocr(img)
+            if result:
+                parts.append("\n".join(line[1] for line in result))
+    finally:
+        doc.close()
+    return "\n\n".join(parts)
+
+
 def _read_pdf(path: Path) -> tuple[str, str | None]:
     try:
-        from pypdf import PdfReader
+        text = _extract_pdf_with_pypdf(path)
+        if text.strip():
+            return text, None
 
-        reader = PdfReader(str(path))
-        pages = []
-        for page in reader.pages:
-            text = page.extract_text()
-            if text:
-                pages.append(text)
-        if not pages:
-            return "", "No extractable text (possibly scanned/image PDF)."
-        return "\n\n".join(pages), None
+        logger.info("No text layer in %s — trying OCR.", path.name)
+        ocr_text = _extract_pdf_with_ocr(path)
+        if ocr_text.strip():
+            logger.info("OCR succeeded for %s (%d chars).", path.name, len(ocr_text))
+            return ocr_text, None
+
+        return "", "No extractable text (scanned PDF — OCR found nothing)."
+    except ImportError as exc:
+        logger.warning("OCR dependencies missing for %s: %s", path.name, exc)
+        text = _extract_pdf_with_pypdf(path)
+        if text.strip():
+            return text, None
+        return "", "No extractable text (scanned/image PDF). Install OCR: pip install pymupdf rapidocr-onnxruntime"
     except Exception as exc:
         logger.exception("Failed to read PDF: %s", path.name)
         return "", str(exc)
@@ -404,6 +476,15 @@ def compute_corpus_fingerprint(files: list[Path]) -> str:
         stat = path.stat()
         hasher.update(f"{path.name}:{stat.st_size}:{stat.st_mtime}".encode())
     return hasher.hexdigest()
+
+
+def documents_changed(files: list[Path]) -> bool:
+    """True when data_source/ differs from the last indexed corpus."""
+    if not files:
+        return False
+    if not st.session_state.corpus_fingerprint:
+        return True
+    return compute_corpus_fingerprint(files) != st.session_state.corpus_fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -492,8 +573,13 @@ class GroqTfidfChatEngine:
             results.append((self.chunks[idx], self.metadatas[idx]))
         return results
 
-    def chat(self, prompt: str, history: list[dict[str, str]] | None = None) -> str:
+    def chat(
+        self,
+        prompt: str,
+        history: list[dict[str, str]] | None = None,
+    ) -> tuple[str, list[dict[str, str]]]:
         retrieved = self._retrieve(prompt)
+        sources = unique_source_records(meta for _, meta in retrieved)
         if not retrieved:
             context = "No matching document sections were found."
             citation_hint = ""
@@ -506,7 +592,8 @@ class GroqTfidfChatEngine:
                 cite = (
                     f"🏛️ Organization: {meta.get('organization', 'Not explicitly mentioned in text')} | "
                     f"📅 Year: {meta.get('year', 'Not explicitly mentioned in text')} | "
-                    f"📜 Reference Section: {meta.get('reference_section', 'Not explicitly mentioned in text')}"
+                    f"📜 Reference Section: {meta.get('reference_section', 'Not explicitly mentioned in text')} | "
+                    f"📁 Document: {meta.get('filename', 'Unknown')}"
                 )
                 if cite not in seen_citations:
                     seen_citations.add(cite)
@@ -535,7 +622,7 @@ class GroqTfidfChatEngine:
         content = response.choices[0].message.content
         if not content:
             raise ValueError("Groq returned an empty response.")
-        return content.strip()
+        return content.strip(), sources
 
 
 @st.cache_resource(show_spinner=False)
@@ -760,6 +847,143 @@ def format_citation_html(response_text: str) -> str:
     return response_text.replace("\n", "<br>")
 
 
+def unique_source_records(metas: Any) -> list[dict[str, str]]:
+    """Deduplicate source documents by filename while preserving citation metadata."""
+    sources: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for meta in metas:
+        filename = (meta.get("filename") or "").strip()
+        if not filename or filename in seen:
+            continue
+        seen.add(filename)
+        sources.append(
+            {
+                "filename": filename,
+                "organization": meta.get("organization", "Not explicitly mentioned in text"),
+                "year": meta.get("year", "Not explicitly mentioned in text"),
+                "reference_section": meta.get("reference_section", "Not explicitly mentioned in text"),
+            }
+        )
+    return sources
+
+
+def extract_sources_from_response(response: Any) -> list[dict[str, str]]:
+    """Collect source filenames from LlamaIndex chat responses."""
+    nodes = getattr(response, "source_nodes", None) or []
+    metas: list[dict[str, str]] = []
+    for item in nodes:
+        node = getattr(item, "node", item)
+        meta = getattr(node, "metadata", None) or {}
+        if meta:
+            metas.append(meta)
+    return unique_source_records(metas)
+
+
+def resolve_document_path(filename: str) -> Path | None:
+    path = DATA_SOURCE_DIR / filename
+    if path.is_file():
+        return path
+    return None
+
+
+def mime_type_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    return {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+    }.get(suffix, "application/octet-stream")
+
+
+@st.cache_data(show_spinner=False)
+def read_document_bytes(path_str: str) -> bytes:
+    return Path(path_str).read_bytes()
+
+
+def render_pdf_preview(path: Path, key_prefix: str) -> None:
+    """Inline PDF viewer — uses streamlit[pdf] when available, else browser iframe."""
+    pdf_bytes = read_document_bytes(str(path))
+    if len(pdf_bytes) > 12_000_000:
+        st.caption("This document is large. Download it to view the full file locally.")
+        return
+
+    if hasattr(st, "pdf"):
+        try:
+            st.pdf(pdf_bytes, height=560)
+            return
+        except Exception as exc:
+            logger.warning("st.pdf unavailable (%s); using iframe fallback.", exc)
+
+    encoded = base64.b64encode(pdf_bytes).decode("ascii")
+    st.components.v1.html(
+        (
+            f'<iframe src="data:application/pdf;base64,{encoded}" '
+            f'width="100%" height="560" style="border:1px solid #D4DCE8;border-radius:8px;"></iframe>'
+        ),
+        height=580,
+        scrolling=False,
+    )
+
+
+def render_source_documents(
+    sources: list[dict[str, str]],
+    key_prefix: str,
+    *,
+    expand_first: bool = False,
+) -> None:
+    """Show related source documents with optional inline PDF preview and download."""
+    if not sources:
+        return
+
+    st.markdown('<p class="source-docs-header">📄 Related source documents</p>', unsafe_allow_html=True)
+    st.caption("Expand a document below to preview the PDF in your browser or download the original file.")
+
+    for index, source in enumerate(sources):
+        filename = source.get("filename", "")
+        path = resolve_document_path(filename)
+        if path is None:
+            st.caption(f"Source file not found on disk: {filename}")
+            continue
+
+        section = source.get("reference_section", "Not explicitly mentioned in text")
+        expander_label = f"{filename}"
+        if section and section != "Not explicitly mentioned in text":
+            expander_label += f" — {section}"
+
+        with st.expander(expander_label, expanded=expand_first and index == 0):
+            st.markdown(
+                (
+                    f'<p class="source-doc-meta">'
+                    f"🏛️ {source.get('organization', 'Government Authority')} · "
+                    f"📅 {source.get('year', 'Not explicitly mentioned in text')}"
+                    f"</p>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+            file_bytes = read_document_bytes(str(path))
+            st.download_button(
+                label="⬇️ Download original document",
+                data=file_bytes,
+                file_name=filename,
+                mime=mime_type_for_path(path),
+                key=f"{key_prefix}_download_{index}_{filename}",
+                use_container_width=True,
+            )
+
+            suffix = path.suffix.lower()
+            if suffix == ".pdf":
+                st.markdown("**Preview**")
+                render_pdf_preview(path, key_prefix=f"{key_prefix}_pdf_{index}")
+            elif suffix in {".docx", ".doc"}:
+                st.info("Word documents can be downloaded and opened locally. PDF preview is shown when the source file is a PDF.")
+            else:
+                preview = path.read_text(encoding="utf-8", errors="replace")[:4000]
+                st.text_area("Document excerpt", preview, height=220, disabled=True)
+
+
 # ---------------------------------------------------------------------------
 # Session state
 # ---------------------------------------------------------------------------
@@ -831,6 +1055,19 @@ def render_sidebar(config: dict[str, str], files: list[Path]) -> None:
             f'<span class="status-badge status-ok">📄 Active Documents: {len(files)}</span>',
             unsafe_allow_html=True,
         )
+        if st.session_state.indexed_files:
+            st.caption(f"Indexed: {len(st.session_state.indexed_files)} file(s)")
+
+        if documents_changed(files) and st.session_state.chat_engine is not None:
+            st.markdown(
+                '<span class="status-badge status-warn">🔄 New/updated documents — re-indexing…</span>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("Add PDFs to `data_source/` — indexed automatically on refresh.")
+
+        if st.button("🔄 Refresh documents", use_container_width=True, help="Re-scan data_source/ after adding files"):
+            st.rerun()
 
         if st.session_state.ingest_errors:
             st.markdown(
@@ -859,8 +1096,9 @@ def render_sidebar(config: dict[str, str], files: list[Path]) -> None:
                        `{DATA_SOURCE_DIR.name}/`
                     2. Use descriptive filenames, e.g.  
                        `Finance_Ministry_Circular_2023.pdf`
-                    3. Click **Rebuild Knowledge Base** below.
-                    4. Documents are indexed automatically on next load.
+                    3. **Refresh the page** or click **Refresh documents** in the sidebar.
+                       The knowledge base re-indexes automatically — no manual rebuild needed.
+                    4. Use **Rebuild Knowledge Base** only if indexing seems stuck.
 
                     **Supported formats:** PDF, DOCX, TXT, MD  
                     **Indexed files:** {len(st.session_state.indexed_files)}
@@ -912,6 +1150,11 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
     ):
         return True
 
+    if st.session_state.corpus_fingerprint and st.session_state.corpus_fingerprint != fingerprint:
+        get_vector_index.clear()
+        get_groq_tfidf_engine.clear()
+        st.session_state.chat_engine = None
+
     try:
         mkey = model_cache_key(config)
         cache_fp = f"{fingerprint}:{mkey}"
@@ -936,7 +1179,8 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                 for path in files:
                     st.caption(f"• {path.name}")
                 timing = (
-                    "**First time only:** indexing usually takes **1–3 minutes** on Streamlit Cloud."
+                    "**First time only:** indexing usually takes **1–3 minutes** on Streamlit Cloud. "
+                    "Scanned PDFs use OCR and may take longer."
                     if config["provider"] == "groq"
                     else "**First time only:** large manuals can take **10–30 minutes** on Ollama. Keep this tab open."
                 )
@@ -1024,51 +1268,137 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
         return False
 
 
+def render_local_setup_help(config: dict[str, str]) -> None:
+    """Show localhost setup steps when the AI provider is not configured."""
+    if config["provider"] == "groq" and not config["groq_api_key"]:
+        st.error("Groq API key is missing on localhost.")
+        st.markdown(
+            """
+            **Local setup (one time):**
+
+            1. Copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml`
+            2. Paste your free Groq key from [console.groq.com](https://console.groq.com)
+            3. Restart Streamlit (`Ctrl+C`, then `streamlit run app.py` again)
+
+            Example `.streamlit/secrets.toml`:
+            ```
+            AI_PROVIDER = "groq"
+            GROQ_API_KEY = "gsk_your_real_key_here"
+            GROQ_MODEL = "llama-3.1-8b-instant"
+            ADMIN_PASSWORD = "admin123"
+            ```
+            """
+        )
+    elif config["provider"] == "openai" and not config["openai_api_key"]:
+        st.error("OpenAI API key is missing. Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or `.env`.")
+    elif config["provider"] == "ollama" and not ollama_is_running(config["ollama_base_url"]):
+        st.error("Ollama is not running. Start Ollama, pull models, then refresh this page.")
+
+
+def chat_is_ready(config: dict[str, str]) -> bool:
+    return is_ai_ready(config) and st.session_state.chat_engine is not None
+
+
+def process_user_question(config: dict[str, str], prompt: str) -> None:
+    """Run one officer query and append assistant/user messages to session state."""
+    prompt = prompt.strip()
+    if not prompt:
+        return
+
+    if not is_ai_ready(config):
+        st.warning("AI engine is not ready. Complete local setup steps above.")
+        return
+
+    if st.session_state.chat_engine is None:
+        st.warning(
+            "Knowledge base is not ready yet. Wait for indexing to finish, "
+            "or use **Rebuild Knowledge Base** in the sidebar."
+        )
+        return
+
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    sources: list[dict[str, str]] = []
+    with st.spinner("Searching official documents…"):
+        try:
+            if config["provider"] == "groq" and hasattr(st.session_state.chat_engine, "chat"):
+                answer, sources = st.session_state.chat_engine.chat(
+                    prompt,
+                    history=st.session_state.messages[:-1],
+                )
+            else:
+                response = st.session_state.chat_engine.chat(prompt)
+                answer = extract_answer_text(response)
+                sources = extract_sources_from_response(response)
+        except Exception as exc:
+            logger.exception("Chat request failed")
+            answer = (
+                "I apologize — a temporary error occurred while processing your request. "
+                "Please try again in a moment. If the issue persists, contact your system administrator."
+            )
+            if st.session_state.admin_unlocked:
+                st.caption(f"Error detail (admin): {type(exc).__name__}: {exc}")
+            else:
+                st.caption(f"Error detail (admin): {type(exc).__name__}")
+
+    st.session_state.messages.append(
+        {"role": "assistant", "content": answer, "sources": sources}
+    )
+    st.rerun()
+
+
 def render_chat(config: dict[str, str]) -> None:
-    for message in st.session_state.messages:
+    ready = chat_is_ready(config)
+
+    st.markdown('<div class="query-panel">', unsafe_allow_html=True)
+    st.markdown("#### 💬 Ask your question")
+    if ready:
+        indexed_list = ", ".join(st.session_state.indexed_files) or "none"
+        st.caption(
+            f"**{len(st.session_state.indexed_files)}** of **{len(scan_data_source())}** document(s) indexed: {indexed_list}. "
+            "After you search, expand **Related source documents** to preview or download PDFs."
+        )
+        if st.session_state.ingest_errors:
+            for err in st.session_state.ingest_errors:
+                st.warning(f"⚠️ Not indexed: {err}")
+    else:
+        st.caption("Complete setup and indexing before searching documents.")
+
+    with st.form("officer_query_form", clear_on_submit=True):
+        st.markdown('<div class="query-row">', unsafe_allow_html=True)
+        col_input, col_button = st.columns([5, 1])
+        with col_input:
+            prompt = st.text_input(
+                "Officer question",
+                placeholder="Ask about circulars, guidelines, or regulations…",
+                disabled=not ready,
+                label_visibility="collapsed",
+            )
+        with col_button:
+            submitted = st.form_submit_button(
+                "Ask AI",
+                type="primary",
+                disabled=not ready,
+                use_container_width=True,
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.caption("Press **Enter** or click **Ask AI** to search.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if submitted and prompt.strip():
+        process_user_question(config, prompt)
+
+    for msg_index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             if message["role"] == "assistant":
                 st.markdown(format_citation_html(message["content"]), unsafe_allow_html=True)
+                render_source_documents(
+                    message.get("sources", []),
+                    key_prefix=f"history_{msg_index}",
+                    expand_first=msg_index == len(st.session_state.messages) - 1,
+                )
             else:
                 st.markdown(message["content"])
-
-    if prompt := st.chat_input("Ask about circulars, guidelines, or regulations…"):
-        if not is_ai_ready(config):
-            st.warning("AI engine is not ready. Check sidebar status and secrets.toml.")
-            return
-
-        if st.session_state.chat_engine is None:
-            st.warning("Knowledge base is not ready. Add documents to `data_source/` and refresh.")
-            return
-
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Searching official documents…"):
-                try:
-                    if config["provider"] == "groq" and hasattr(st.session_state.chat_engine, "chat"):
-                        answer = st.session_state.chat_engine.chat(
-                            prompt,
-                            history=st.session_state.messages[:-1],
-                        )
-                    else:
-                        response = st.session_state.chat_engine.chat(prompt)
-                        answer = extract_answer_text(response)
-                except Exception as exc:
-                    logger.exception("Chat request failed")
-                    answer = (
-                        "I apologize — a temporary error occurred while processing your request. "
-                        "Please try again in a moment. If the issue persists, contact your system administrator."
-                    )
-                    if st.session_state.admin_unlocked:
-                        st.caption(f"Error detail (admin): {type(exc).__name__}: {exc}")
-                    else:
-                        st.caption(f"Error detail (admin): {type(exc).__name__}")
-
-            st.markdown(format_citation_html(answer), unsafe_allow_html=True)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
 
 
 # ---------------------------------------------------------------------------
@@ -1091,23 +1421,8 @@ def main() -> None:
     render_header()
 
     if not is_ai_ready(config):
-        if config["provider"] == "openai":
-            st.info(
-                "**Configuration required.** Add your `OPENAI_API_KEY` to Streamlit **Secrets** "
-                "or switch to free Groq: `AI_PROVIDER = \"groq\"`"
-            )
-        elif config["provider"] == "groq":
-            st.info(
-                "**Groq API key required.** Get a free key at [console.groq.com](https://console.groq.com), "
-                "then add `GROQ_API_KEY` to Streamlit **Secrets**. See `STREAMLIT-DEPLOY.md`."
-            )
-        else:
-            st.info(
-                "**Ollama is not running.** Install it from [ollama.com/download](https://ollama.com/download), "
-                "then run in a terminal:\n\n"
-                "```\nollama pull llama3.2\nollama pull nomic-embed-text\n```\n\n"
-                "Keep Ollama open in the background, then refresh this page."
-            )
+        render_local_setup_help(config)
+        render_chat(config)
         return
 
     if not files:
@@ -1125,8 +1440,13 @@ def main() -> None:
         )
         return
 
-    if initialize_rag(config, files):
-        render_chat(config)
+    if not initialize_rag(config, files):
+        st.warning(
+            "Knowledge base could not be loaded. Check the error above, then use "
+            "**Rebuild Knowledge Base** in the sidebar after fixing the issue."
+        )
+
+    render_chat(config)
 
 
 if __name__ == "__main__":
