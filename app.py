@@ -225,6 +225,9 @@ def get_config() -> dict[str, str]:
         "embed_model": _get_secret("EMBED_MODEL", "text-embedding-3-small"),
         "groq_api_key": _get_secret("GROQ_API_KEY"),
         "groq_model": _get_secret("GROQ_MODEL", "llama-3.1-8b-instant"),
+        "groq_vision_model": _get_secret(
+            "GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"
+        ),
         "fastembed_model": _get_secret("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5"),
         "ollama_model": _get_secret("OLLAMA_MODEL", "llama3.2"),
         "ollama_embed_model": _get_secret("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
@@ -381,6 +384,75 @@ def _extract_pdf_with_pypdf(path: Path) -> str:
     return "\n\n".join(pages)
 
 
+def _read_pdf_sidecar(path: Path) -> str:
+    """Optional pre-extracted text: `document.pdf` → `document.ocr.txt`."""
+    sidecar = path.with_name(f"{path.stem}.ocr.txt")
+    if sidecar.is_file():
+        return sidecar.read_text(encoding="utf-8", errors="replace")
+    return ""
+
+
+def _local_ocr_available() -> bool:
+    try:
+        import fitz  # noqa: F401
+        from rapidocr_onnxruntime import RapidOCR  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _extract_pdf_with_groq_vision(path: Path) -> str:
+    """Cloud-friendly OCR using Groq Vision (works on Streamlit Cloud)."""
+    import base64
+
+    import fitz
+    from openai import OpenAI
+
+    config = get_config()
+    if not config.get("groq_api_key"):
+        return ""
+
+    client = OpenAI(
+        api_key=config["groq_api_key"],
+        base_url="https://api.groq.com/openai/v1",
+    )
+    doc = fitz.open(str(path))
+    parts: list[str] = []
+    try:
+        for page in doc:
+            png_bytes = page.get_pixmap(dpi=150).tobytes("png")
+            encoded = base64.b64encode(png_bytes).decode("ascii")
+            response = client.chat.completions.create(
+                model=config["groq_vision_model"],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Extract ALL text from this official government document image. "
+                                    "Return only the extracted text. Preserve headings and numbering."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                            },
+                        ],
+                    }
+                ],
+                temperature=0.0,
+                max_tokens=4096,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            if content:
+                parts.append(content)
+    finally:
+        doc.close()
+    return "\n\n".join(parts)
+
+
 def _extract_pdf_with_ocr(path: Path) -> str:
     """OCR fallback for scanned/image-only PDFs (no embedded text layer)."""
     import fitz
@@ -410,19 +482,32 @@ def _read_pdf(path: Path) -> tuple[str, str | None]:
         if text.strip():
             return text, None
 
-        logger.info("No text layer in %s — trying OCR.", path.name)
-        ocr_text = _extract_pdf_with_ocr(path)
-        if ocr_text.strip():
-            logger.info("OCR succeeded for %s (%d chars).", path.name, len(ocr_text))
-            return ocr_text, None
+        sidecar_text = _read_pdf_sidecar(path)
+        if sidecar_text.strip():
+            logger.info("Using sidecar OCR text for %s", path.name)
+            return sidecar_text, None
 
-        return "", "No extractable text (scanned PDF — OCR found nothing)."
-    except ImportError as exc:
-        logger.warning("OCR dependencies missing for %s: %s", path.name, exc)
-        text = _extract_pdf_with_pypdf(path)
-        if text.strip():
-            return text, None
-        return "", "No extractable text (scanned/image PDF). Install OCR: pip install pymupdf rapidocr-onnxruntime"
+        logger.info("No text layer in %s — trying OCR.", path.name)
+
+        config = get_config()
+        if config.get("groq_api_key"):
+            groq_text = _extract_pdf_with_groq_vision(path)
+            if groq_text.strip():
+                logger.info("Groq Vision OCR succeeded for %s (%d chars).", path.name, len(groq_text))
+                return groq_text, None
+
+        if _local_ocr_available():
+            ocr_text = _extract_pdf_with_ocr(path)
+            if ocr_text.strip():
+                logger.info("Local OCR succeeded for %s (%d chars).", path.name, len(ocr_text))
+                return ocr_text, None
+
+        return "", (
+            "No extractable text (scanned/image PDF). "
+            "On Streamlit Cloud, ensure GROQ_API_KEY is set for vision OCR, "
+            "or add a sidecar file named "
+            f"{path.stem}.ocr.txt"
+        )
     except Exception as exc:
         logger.exception("Failed to read PDF: %s", path.name)
         return "", str(exc)
@@ -1179,8 +1264,8 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                 for path in files:
                     st.caption(f"• {path.name}")
                 timing = (
-                    "**First time only:** indexing usually takes **1–3 minutes** on Streamlit Cloud. "
-                    "Scanned PDFs use OCR and may take longer."
+                    "**First time only:** indexing usually takes **1–3 minutes**. "
+                    "Scanned PDFs use Groq Vision OCR and may take a little longer."
                     if config["provider"] == "groq"
                     else "**First time only:** large manuals can take **10–30 minutes** on Ollama. Keep this tab open."
                 )
