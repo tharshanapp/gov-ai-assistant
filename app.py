@@ -199,6 +199,78 @@ section[data-testid="stSidebar"] .block-container {
     margin-bottom: 1rem;
 }
 
+/* Custom developer footer */
+.gov-footer {
+    margin-top: 3rem;
+    padding: 2rem 1.5rem 1.5rem;
+    background: linear-gradient(180deg, #F8F9FB 0%, #EEF2F7 100%);
+    border-top: 3px solid var(--gov-gold);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -4px 24px rgba(26, 43, 74, 0.08);
+    text-align: center;
+}
+.gov-footer-inner {
+    max-width: 640px;
+    margin: 0 auto;
+}
+.gov-footer-label {
+    display: block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: #6B7A90;
+    margin-bottom: 0.35rem;
+}
+.gov-footer-name {
+    display: block;
+    font-family: 'Source Serif 4', serif;
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: var(--gov-navy);
+    letter-spacing: 0.04em;
+    margin-bottom: 0.65rem;
+}
+.gov-footer-tagline {
+    font-family: 'Source Serif 4', serif;
+    font-style: italic;
+    font-size: 1.02rem;
+    color: var(--gov-navy-light);
+    margin: 0 0 1rem 0;
+    line-height: 1.5;
+}
+.gov-footer-email {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.55rem 1.15rem;
+    background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
+    color: #FFFFFF !important;
+    text-decoration: none !important;
+    border-radius: 999px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: 0 4px 14px rgba(26, 43, 74, 0.22);
+}
+.gov-footer-email:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(26, 43, 74, 0.28);
+    color: var(--gov-gold-light) !important;
+}
+.gov-footer-divider {
+    width: 60px;
+    height: 3px;
+    background: linear-gradient(90deg, transparent, var(--gov-gold), transparent);
+    margin: 1.25rem auto 0.85rem;
+    border-radius: 2px;
+}
+.gov-footer-copy {
+    font-size: 0.78rem;
+    color: #8A96A8;
+    margin: 0;
+}
+
 /* Hide Streamlit branding footer on Community Cloud */
 footer { visibility: hidden; }
 </style>
@@ -1106,6 +1178,27 @@ def render_header() -> None:
     )
 
 
+def render_footer() -> None:
+    year = datetime.now().year
+    st.markdown(
+        f"""
+        <div class="gov-footer">
+            <div class="gov-footer-inner">
+                <span class="gov-footer-label">Developed by</span>
+                <span class="gov-footer-name">S. THARSHAN</span>
+                <p class="gov-footer-tagline">"Building Intelligent Solutions for Tomorrow"</p>
+                <a class="gov-footer-email" href="mailto:tharsh.ai.dev@gmail.com">
+                    ✉️ tharsh.ai.dev@gmail.com
+                </a>
+                <div class="gov-footer-divider"></div>
+                <p class="gov-footer-copy">© {year} Government Regulatory AI Assistant · tharshan.lk</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_status_badge(label: str, ok: bool, detail: str = "") -> None:
     css_class = "status-ok" if ok else "status-error"
     icon = "✅" if ok else "⚠️"
@@ -1505,33 +1598,36 @@ def main() -> None:
     render_sidebar(config, files)
     render_header()
 
-    if not is_ai_ready(config):
-        render_local_setup_help(config)
+    try:
+        if not is_ai_ready(config):
+            render_local_setup_help(config)
+            render_chat(config)
+            return
+
+        if not files:
+            st.warning(
+                f"No documents found in `{DATA_SOURCE_DIR.name}/`. "
+                "Administrators can add PDF or Word files and rebuild the knowledge base from the sidebar."
+            )
+            st.markdown(
+                """
+                **Example queries once documents are loaded:**
+                - *What are the leave entitlements under the latest public service circular?*
+                - *Summarize procurement guidelines for values above the threshold limit.*
+                - *Which section covers disciplinary procedures?*
+                """
+            )
+            return
+
+        if not initialize_rag(config, files):
+            st.warning(
+                "Knowledge base could not be loaded. Check the error above, then use "
+                "**Rebuild Knowledge Base** in the sidebar after fixing the issue."
+            )
+
         render_chat(config)
-        return
-
-    if not files:
-        st.warning(
-            f"No documents found in `{DATA_SOURCE_DIR.name}/`. "
-            "Administrators can add PDF or Word files and rebuild the knowledge base from the sidebar."
-        )
-        st.markdown(
-            """
-            **Example queries once documents are loaded:**
-            - *What are the leave entitlements under the latest public service circular?*
-            - *Summarize procurement guidelines for values above the threshold limit.*
-            - *Which section covers disciplinary procedures?*
-            """
-        )
-        return
-
-    if not initialize_rag(config, files):
-        st.warning(
-            "Knowledge base could not be loaded. Check the error above, then use "
-            "**Rebuild Knowledge Base** in the sidebar after fixing the issue."
-        )
-
-    render_chat(config)
+    finally:
+        render_footer()
 
 
 if __name__ == "__main__":
