@@ -1282,7 +1282,12 @@ def inject_cloud_toolbar_guard() -> None:
     """Custom Share modal; block Streamlit/GitHub/profile links; hide empty menu."""
     ui_path = BASE_DIR / "scripts" / "gov-ui.js"
     ui_script = ui_path.read_text(encoding="utf-8").replace("__APP_TITLE__", APP_NAME)
-    st.components.v1.html(f"<script>{ui_script}</script>", height=0, width=0)
+    st.components.v1.html(
+        f"<script>{ui_script}</script>",
+        height=0,
+        width=0,
+        scrolling=False,
+    )
 
 
 def render_footer() -> None:
@@ -1422,6 +1427,65 @@ def render_sidebar(config: dict[str, str], files: list[Path]) -> None:
         st.caption(f"© {datetime.now().year} · tharshan.lk · {config['provider'].upper()}")
 
 
+def _persist_index_fingerprint(cache_fp: str) -> None:
+    INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    FINGERPRINT_FILE.write_text(cache_fp, encoding="utf-8")
+
+
+def _index_cache_matches(fingerprint: str, model_key: str) -> bool:
+    cache_fp = f"{fingerprint}:{model_key}"
+    return (
+        FINGERPRINT_FILE.exists()
+        and FINGERPRINT_FILE.read_text(encoding="utf-8").strip() == cache_fp
+    )
+
+
+def restore_chat_engine_from_cache(config: dict[str, str], fingerprint: str) -> bool:
+    """Reuse cached knowledge base without re-running indexing UI."""
+    mkey = model_cache_key(config)
+    has_disk_cache = _index_cache_matches(fingerprint, mkey)
+    session_matches = st.session_state.corpus_fingerprint == fingerprint
+
+    if st.session_state.chat_engine is not None and session_matches:
+        return True
+
+    if not session_matches and not has_disk_cache:
+        return False
+
+    if config["provider"] == "groq":
+        engine, indexed_files, errors = get_groq_tfidf_engine(
+            fingerprint,
+            config_snapshot(config),
+        )
+        if engine is None:
+            return False
+        st.session_state.chat_engine = engine
+        st.session_state.indexed_files = indexed_files
+        st.session_state.ingest_errors = errors
+        st.session_state.corpus_fingerprint = fingerprint
+        return True
+
+    if not (has_disk_cache and PERSIST_DIR.exists()):
+        return False
+
+    index, indexed_files, errors = get_vector_index(
+        mkey,
+        fingerprint,
+        config_snapshot(config),
+    )
+    if index is None:
+        return False
+    st.session_state.chat_engine = create_chat_engine(
+        index,
+        config,
+        history=st.session_state.messages,
+    )
+    st.session_state.indexed_files = indexed_files
+    st.session_state.ingest_errors = errors
+    st.session_state.corpus_fingerprint = fingerprint
+    return True
+
+
 def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
     if not is_ai_ready(config):
         return False
@@ -1429,10 +1493,7 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
         return False
 
     fingerprint = compute_corpus_fingerprint(files)
-    if (
-        st.session_state.corpus_fingerprint == fingerprint
-        and st.session_state.chat_engine is not None
-    ):
+    if restore_chat_engine_from_cache(config, fingerprint):
         return True
 
     if st.session_state.corpus_fingerprint and st.session_state.corpus_fingerprint != fingerprint:
@@ -1442,12 +1503,7 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
 
     try:
         mkey = model_cache_key(config)
-        cache_fp = f"{fingerprint}:{mkey}"
-        cached = (
-            FINGERPRINT_FILE.exists()
-            and PERSIST_DIR.exists()
-            and FINGERPRINT_FILE.read_text(encoding="utf-8").strip() == cache_fp
-        )
+        cached = _index_cache_matches(fingerprint, mkey)
 
         provider_label = {
             "openai": "OpenAI",
@@ -1488,6 +1544,7 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                     st.error(f"Unable to build the knowledge base. {detail}")
                     return False
                 st.session_state.chat_engine = engine
+                _persist_index_fingerprint(f"{fingerprint}:{mkey}")
                 status.update(label="Indexing complete — ready to chat", state="complete")
                 return True
 
@@ -1702,7 +1759,6 @@ def main() -> None:
         },
     )
     st.markdown(GOVERNMENT_CSS, unsafe_allow_html=True)
-    inject_cloud_toolbar_guard()
 
     init_session_state()
     config = get_config()
@@ -1741,6 +1797,7 @@ def main() -> None:
         render_chat(config)
     finally:
         render_footer()
+        inject_cloud_toolbar_guard()
 
 
 if __name__ == "__main__":
