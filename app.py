@@ -327,53 +327,32 @@ section[data-testid="stSidebar"] .block-container {
 }
 
 /* Hide Streamlit branding footer on Community Cloud */
-footer { visibility: hidden; }
+footer { visibility: hidden; height: 0 !important; }
 
-/* Streamlit Cloud: hide GitHub + pencil/edit only (keep share & star) */
-.stApp header a[href*="github.com"],
-.stApp header a[href*="github.dev"],
-.stApp [data-testid="stHeader"] a[href*="github.com"],
-.stApp [data-testid="stHeader"] a[href*="github.dev"],
-.stApp [data-testid="stHeader"] a[href*="/edit"],
-.stApp a[href*="github.com"][target="_blank"],
-.stApp a[title*="GitHub"],
-.stApp a[title*="github"],
-.stApp a[aria-label*="GitHub"],
-.stApp a[aria-label*="github"],
-.stApp a[title*="View app source"],
-.stApp a[title*="Fork"],
-.stApp a[aria-label*="Fork"],
-.stApp a[title*="Edit"],
-.stApp a[aria-label*="Edit"],
-.stApp a[href*="share.streamlit.io/edit"],
-.stApp a[href*="share.streamlit.io/manage"],
-.stApp button[title*="GitHub"],
-.stApp button[title*="View app source"],
-.stApp button[title*="Fork"],
-.stApp button[title*="Edit"],
+/* Hide Streamlit Cloud badges: GitHub, pencil, fork (Share/Star kept via JS) */
+[class*="viewerBadge"],
+[class*="ViewerBadge"],
+[class*="styles_viewerBadge"],
 #GithubIcon,
-[class*="viewerBadge_link"],
-[class*="viewerBadge_container"] {
+a[href*="github.com"],
+a[href*="github.dev"],
+button[title*="GitHub"],
+a[title*="View app source"],
+a[title*="Fork this app"],
+a[title*="Edit app"] {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
     width: 0 !important;
     height: 0 !important;
+    max-width: 0 !important;
+    max-height: 0 !important;
     overflow: hidden !important;
     opacity: 0 !important;
     margin: 0 !important;
     padding: 0 !important;
-}
-
-/* Fallback: hide last two header icons (pencil + GitHub), keep Share & Star */
-[data-testid="stHeader"] a:nth-last-child(1),
-[data-testid="stHeader"] a:nth-last-child(2) {
-    display: none !important;
-    visibility: hidden !important;
-    pointer-events: none !important;
-    width: 0 !important;
-    height: 0 !important;
-    opacity: 0 !important;
+    position: absolute !important;
+    left: -9999px !important;
 }
 </style>
 """
@@ -1286,81 +1265,120 @@ def render_header() -> None:
 
 
 def inject_cloud_toolbar_guard() -> None:
-    """Hide GitHub/pencil in Streamlit header; keep Share & Star visible."""
-    guard_script = """
-    (function () {
-      const KEEP = ["share", "star", "favorite", "bookmark"];
+    """Keep only Share & Star in header; remove GitHub, pencil, Streamlit links."""
+    parent_css = """
+    [class*="viewerBadge"],[class*="ViewerBadge"],#GithubIcon,
+    a[href*="github.com"],a[href*="github.dev"]{display:none!important;
+    visibility:hidden!important;pointer-events:none!important;width:0!important;height:0!important}
+    """
+    guard_script = f"""
+    (function () {{
+      const PARENT_CSS = {parent_css!r};
 
-      function labelOf(el) {
+      function labelOf(el) {{
         return (
           (el.getAttribute("aria-label") || "") + " " +
           (el.getAttribute("title") || "") + " " +
           (el.textContent || "")
-        ).toLowerCase();
-      }
+        ).toLowerCase().trim();
+      }}
 
-      function shouldKeep(el) {
-        return KEEP.some((k) => labelOf(el).includes(k));
-      }
-
-      function shouldHide(el) {
-        if (!el || el.classList.contains("gov-site-fab")) return false;
-        if (shouldKeep(el)) return false;
-        const href = (el.href || el.getAttribute("href") || "").toLowerCase();
+      function isShareOrStar(el) {{
         const label = labelOf(el);
-        if (href.includes("github.com") || href.includes("github.dev")) return true;
-        if (href.includes("/edit") || href.includes("openeditor")) return true;
-        if (label.includes("github") || label.includes("view source")) return true;
-        if (label.includes("fork") || label.includes("edit app")) return true;
-        if (href.includes("share.streamlit.io") && !label.includes("share")) return true;
-        return false;
-      }
+        const text = (el.textContent || "").trim().toLowerCase();
+        return (
+          label.includes("share") || text === "share" ||
+          label.includes("star") || label.includes("favorite") || label.includes("bookmark")
+        );
+      }}
 
-      function hideEl(el) {
+      function removeEl(el) {{
+        if (!el || !el.parentNode) return;
         el.style.setProperty("display", "none", "important");
         el.style.setProperty("visibility", "hidden", "important");
         el.style.setProperty("pointer-events", "none", "important");
-        el.style.setProperty("width", "0", "important");
-        el.style.setProperty("height", "0", "important");
-        el.style.setProperty("margin", "0", "important");
-        el.style.setProperty("padding", "0", "important");
-        el.setAttribute("aria-hidden", "true");
-      }
+        el.remove();
+      }}
 
-      function scrub(doc) {
+      function injectCss(doc) {{
+        if (!doc || doc.getElementById("gov-toolbar-css")) return;
+        const style = doc.createElement("style");
+        style.id = "gov-toolbar-css";
+        style.textContent = PARENT_CSS;
+        doc.head.appendChild(style);
+      }}
+
+      function scrubHeaderWhitelist(doc) {{
+        const header = doc.querySelector('[data-testid="stHeader"]');
+        if (!header) return;
+
+        const clickables = [...header.querySelectorAll("a, button, [role='button']")];
+        let shareIdx = -1;
+        let starIdx = -1;
+
+        clickables.forEach((el, idx) => {{
+          if (labelOf(el).includes("share") || (el.textContent || "").trim().toLowerCase() === "share") {{
+            shareIdx = idx;
+          }}
+          if (labelOf(el).includes("star") || labelOf(el).includes("favorite")) {{
+            starIdx = idx;
+          }}
+        }});
+
+        const keep = new Set([shareIdx, starIdx].filter((i) => i >= 0));
+        if (keep.size === 0 && clickables.length >= 2) {{
+          keep.add(0);
+          keep.add(1);
+        }}
+
+        clickables.forEach((el, idx) => {{
+          if (!keep.has(idx)) removeEl(el);
+        }});
+      }}
+
+      function scrubGlobal(doc) {{
         if (!doc) return;
-        doc.querySelectorAll('[data-testid="stHeader"] a, header a, header button').forEach((el) => {
-          if (shouldHide(el)) hideEl(el);
-        });
-        doc.querySelectorAll('a[href*="github.com"], a[href*="github.dev"]').forEach((el) => {
-          if (!shouldKeep(el)) hideEl(el);
-        });
-        doc.querySelectorAll("a, button, [role='button']").forEach((el) => {
-          if (shouldHide(el)) hideEl(el);
-        });
-      }
 
-      function boot(doc) {
-        if (!doc || doc.getElementById("gov-hide-github-pencil")) return;
-        const runner = doc.createElement("script");
-        runner.id = "gov-hide-github-pencil";
-        runner.type = "text/javascript";
-        runner.text = `
-          (function(){
-            ${scrub.toString()}
-            scrub(document);
-            setInterval(function(){ scrub(document); }, 400);
-            new MutationObserver(function(){ scrub(document); })
-              .observe(document.documentElement, {childList:true, subtree:true});
-          })();
-        `;
-        doc.head.appendChild(runner);
-      }
+        doc.querySelectorAll(
+          '[class*="viewerBadge"], [class*="ViewerBadge"], #GithubIcon'
+        ).forEach(removeEl);
 
-      try { boot(document); } catch (e) {}
-      try { boot(window.parent.document); scrub(window.parent.document); } catch (e) {}
-      try { boot(window.top.document); scrub(window.top.document); } catch (e) {}
-    })();
+        doc.querySelectorAll('a[href*="github.com"], a[href*="github.dev"]').forEach(removeEl);
+
+        doc.querySelectorAll('a[href*="streamlit.io"], a[href*="streamlit.com"]').forEach((el) => {{
+          if (!isShareOrStar(el)) removeEl(el);
+        }});
+
+        doc.querySelectorAll('[data-testid="stHeader"] a, [data-testid="stHeader"] button').forEach((el) => {{
+          if (!isShareOrStar(el)) removeEl(el);
+        }});
+
+        scrubHeaderWhitelist(doc);
+      }}
+
+      function runOn(doc) {{
+        if (!doc) return;
+        injectCss(doc);
+        scrubGlobal(doc);
+      }}
+
+      function boot(doc) {{
+        if (!doc || doc.getElementById("gov-toolbar-runner")) return;
+        runOn(doc);
+        const marker = doc.createElement("meta");
+        marker.id = "gov-toolbar-runner";
+        doc.head.appendChild(marker);
+        setInterval(() => runOn(doc), 300);
+        new MutationObserver(() => runOn(doc)).observe(doc.documentElement, {{
+          childList: true,
+          subtree: true,
+        }});
+      }}
+
+      [document, window.parent?.document, window.top?.document].forEach((doc) => {{
+        try {{ boot(doc); }} catch (e) {{}}
+      }});
+    }})();
     """
     st.components.v1.html(f"<script>{guard_script}</script>", height=0, width=0)
 
