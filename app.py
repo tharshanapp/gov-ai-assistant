@@ -41,6 +41,7 @@ SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
 APP_NAME = "GovKnowledge AI"
 APP_TAGLINE = "The Intelligent Knowledge Hub for Government Officers"
+DEVELOPER_SITE_URL = "https://tharshan.lk"
 
 SYSTEM_PROMPT = """You are an elite legal and regulatory compliance assistant for public sector officers.
 
@@ -277,31 +278,62 @@ section[data-testid="stSidebar"] .block-container {
 /* Hide Streamlit branding footer on Community Cloud */
 footer { visibility: hidden; }
 
-/* Hide GitHub, Fork, and repo links injected by Streamlit Community Cloud */
+/* Streamlit Cloud: hide GitHub + pencil/edit only (keep share & star) */
+.stApp header a[href*="github.com"],
+.stApp [data-testid="stHeader"] a[href*="github.com"],
+.stApp a[href*="github.com"][target="_blank"],
+.stApp a[title*="GitHub"],
+.stApp a[title*="github"],
+.stApp a[aria-label*="GitHub"],
+.stApp a[aria-label*="github"],
+.stApp a[title*="View app source"],
+.stApp a[title*="Fork"],
+.stApp a[aria-label*="Fork"],
+.stApp a[href*="share.streamlit.io/edit"],
+.stApp a[href*="share.streamlit.io/manage"],
+.stApp button[title*="GitHub"],
+.stApp button[title*="View app source"],
+.stApp button[title*="Fork"],
 #GithubIcon,
-#MainMenu,
-[data-testid="stToolbar"] a[href*="github.com"],
-[data-testid="stHeader"] a[href*="github.com"],
-.stApp a[href*="github.com"],
-.stApp a[href*="github.com/"],
-a[title="View app source"],
-a[title="Fork this app"],
-button[title="View app source"],
-button[title="Fork this app"],
-[class*="viewerBadge"],
-[class*="styles_viewerBadge"],
-.viewerBadge_container__1QSob,
-.viewerBadge_link__1S137,
-.viewerBadge_text__1JaDK {
+[class*="viewerBadge_link"] {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
-    height: 0 !important;
     width: 0 !important;
-    max-height: 0 !important;
-    max-width: 0 !important;
+    height: 0 !important;
     overflow: hidden !important;
     opacity: 0 !important;
+}
+
+/* Custom tharshan.lk shortcut (top-right) */
+.gov-site-fab {
+    position: fixed;
+    top: 0.72rem;
+    right: 0.85rem;
+    z-index: 999990;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.42rem 0.9rem;
+    background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
+    color: #FFFFFF !important;
+    text-decoration: none !important;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    border: 1.5px solid var(--gov-gold);
+    box-shadow: 0 3px 14px rgba(26, 43, 74, 0.28);
+    letter-spacing: 0.02em;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.gov-site-fab:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 5px 18px rgba(26, 43, 74, 0.34);
+    color: var(--gov-gold-light) !important;
+}
+.gov-site-fab-icon {
+    font-size: 1rem;
+    line-height: 1;
 }
 </style>
 """
@@ -1208,6 +1240,87 @@ def render_header() -> None:
     )
 
 
+def render_developer_site_link() -> None:
+    """Fixed shortcut to tharshan.lk in the top-right corner."""
+    st.markdown(
+        f"""
+        <a class="gov-site-fab" href="{DEVELOPER_SITE_URL}" target="_blank" rel="noopener noreferrer"
+           title="Visit tharshan.lk">
+            <span class="gov-site-fab-icon">🌐</span>
+            <span>tharshan.lk</span>
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def inject_cloud_toolbar_guard() -> None:
+    """Hide GitHub/pencil links via JS; keep share & star buttons visible."""
+    st.components.v1.html(
+        """
+        <script>
+        (() => {
+          const HIDE_URL_PARTS = ["github.com", "github.dev", "/edit", "/manage"];
+          const HIDE_LABEL_PARTS = [
+            "github", "view app source", "view source", "fork",
+            "open in editor", "edit app", "manage app", "open github"
+          ];
+          const KEEP_LABEL_PARTS = ["share", "star", "favorite", "bookmark"];
+
+          const labelOf = (el) => (
+            (el.getAttribute("aria-label") || "") + " " +
+            (el.getAttribute("title") || "") + " " +
+            (el.textContent || "")
+          ).toLowerCase();
+
+          const shouldHide = (el) => {
+            if (!el || el.classList?.contains("gov-site-fab")) return false;
+            const href = (el.href || el.getAttribute("href") || "").toLowerCase();
+            const label = labelOf(el);
+
+            if (KEEP_LABEL_PARTS.some((k) => label.includes(k))) return false;
+            if (HIDE_URL_PARTS.some((k) => href.includes(k))) return true;
+            if (HIDE_LABEL_PARTS.some((k) => label.includes(k))) return true;
+            if (href.includes("share.streamlit.io") && !label.includes("share")) return true;
+            return false;
+          };
+
+          const hideUnwanted = (root) => {
+            root.querySelectorAll("a, button, [role='button']").forEach((el) => {
+              if (!shouldHide(el)) return;
+              el.style.setProperty("display", "none", "important");
+              el.style.setProperty("visibility", "hidden", "important");
+              el.style.setProperty("pointer-events", "none", "important");
+              el.setAttribute("aria-hidden", "true");
+              el.tabIndex = -1;
+            });
+          };
+
+          const run = () => {
+            hideUnwanted(document);
+            try {
+              if (window.parent && window.parent.document) {
+                hideUnwanted(window.parent.document);
+              }
+            } catch (e) {
+              /* cross-origin parent — expected on some hosts */
+            }
+          };
+
+          run();
+          new MutationObserver(run).observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+          });
+          setInterval(run, 1200);
+        })();
+        </script>
+        """,
+        height=0,
+        width=0,
+    )
+
+
 def render_footer() -> None:
     year = datetime.now().year
     st.markdown(
@@ -1625,6 +1738,8 @@ def main() -> None:
         },
     )
     st.markdown(GOVERNMENT_CSS, unsafe_allow_html=True)
+    render_developer_site_link()
+    inject_cloud_toolbar_guard()
 
     init_session_state()
     config = get_config()
