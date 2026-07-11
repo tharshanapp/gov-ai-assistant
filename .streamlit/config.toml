@@ -19,4 +19,4 @@ serverPort = 8501
 
 [client]
 # Hide developer menu, GitHub-adjacent toolbar items for public viewers
-toolbarMode = "minimal"
+toolbarMode = "viewer"

@@ -247,54 +247,6 @@ header[data-testid="stHeader"] {
     z-index: 999991 !important;
 }
 
-/* Permanent top action bar (Menu + Share) */
-#gov-top-actions {
-    position: fixed;
-    top: 0.45rem;
-    right: 0.55rem;
-    z-index: 999992;
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    padding: 0.3rem 0.45rem;
-    background: rgba(255, 255, 255, 0.97);
-    border: 1px solid var(--gov-border);
-    border-radius: 999px;
-    box-shadow: 0 2px 12px rgba(26, 43, 74, 0.14);
-}
-#gov-top-actions button {
-    font-family: 'Source Sans 3', sans-serif;
-    font-size: 0.78rem;
-    font-weight: 700;
-    padding: 0.38rem 0.75rem;
-    border-radius: 999px;
-    border: 1px solid var(--gov-border);
-    background: #FFFFFF;
-    color: var(--gov-navy);
-    cursor: pointer;
-    transition: background 0.15s ease, color 0.15s ease;
-}
-#gov-top-actions button:hover {
-    background: var(--gov-navy);
-    color: #FFFFFF;
-    border-color: var(--gov-navy);
-}
-#gov-top-actions .gov-share-btn {
-    background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
-    color: #FFFFFF;
-    border-color: var(--gov-gold);
-}
-#gov-share-toast {
-    display: none;
-    font-size: 0.72rem;
-    color: #1B5E20;
-    font-weight: 600;
-    padding: 0.2rem 0.45rem;
-}
-#gov-share-toast.show {
-    display: inline-block;
-}
-
 /* Sidebar styling */
 section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #F0F4FA 0%, #E8EDF5 100%);
@@ -389,28 +341,27 @@ section[data-testid="stSidebar"] .block-container {
 /* Hide Streamlit branding footer on Community Cloud */
 footer { visibility: hidden; height: 0 !important; }
 
-/* Hide Streamlit Cloud badges: GitHub, pencil, fork (Share/Star kept via JS) */
+/* Hide Streamlit menu, profile, GitHub, Streamlit links */
+[data-testid="stToolbar"],
+[data-testid="stToolbarActions"],
+[data-testid="stHeaderActionElements"],
+#MainMenu,
 [class*="viewerBadge"],
 [class*="ViewerBadge"],
-[class*="styles_viewerBadge"],
 #GithubIcon,
 a[href*="github.com"],
 a[href*="github.dev"],
-button[title*="GitHub"],
-a[title*="View app source"],
-a[title*="Fork this app"],
-a[title*="Edit app"] {
+a[href*="streamlit.io"],
+a[href*="streamlit.com"],
+a[href*="share.streamlit"],
+[class*="profile"],
+[class*="Profile"] {
     display: none !important;
     visibility: hidden !important;
     pointer-events: none !important;
     width: 0 !important;
     height: 0 !important;
-    max-width: 0 !important;
-    max-height: 0 !important;
-    overflow: hidden !important;
     opacity: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
     position: absolute !important;
     left: -9999px !important;
 }
@@ -1325,150 +1276,9 @@ def render_header() -> None:
 
 
 def inject_cloud_toolbar_guard() -> None:
-    """Safely hide GitHub badges only; protect sidebar & Share controls."""
-    ui_script = """
-    (function () {
-      function labelOf(el) {
-        return (
-          (el.getAttribute("aria-label") || "") + " " +
-          (el.getAttribute("title") || "") + " " +
-          (el.getAttribute("data-testid") || "") + " " +
-          (el.textContent || "")
-        ).toLowerCase();
-      }
-
-      function isProtected(el) {
-        if (!el) return true;
-        const label = labelOf(el);
-        const tid = el.getAttribute("data-testid") || "";
-        if (tid.includes("collapsedControl") || tid.includes("Sidebar")) return true;
-        if (tid.includes("stToolbar") || tid.includes("stDecoration")) return true;
-        if (label.includes("sidebar") || label.includes("collapse") || label.includes("expand")) return true;
-        if (label.includes("share") || label.includes("star")) return true;
-        if (el.closest('[data-testid="collapsedControl"]')) return true;
-        if (el.closest('[data-testid="stSidebarCollapsedControl"]')) return true;
-        if (el.closest('[data-testid="stToolbar"]')) return true;
-        if (el.classList.contains("gov-site-fab")) return true;
-        return false;
-      }
-
-      function hideGithubOnly(el) {
-        if (!el || isProtected(el)) return;
-        const href = (el.href || el.getAttribute("href") || "").toLowerCase();
-        const label = labelOf(el);
-        const isGithub = href.includes("github.com") || href.includes("github.dev");
-        const isBadge = (el.className || "").toLowerCase().includes("viewerbadge");
-        const isFork = label.includes("fork") || label.includes("view source") || label.includes("edit app");
-        if (isGithub || isBadge || isFork) {
-          el.style.setProperty("display", "none", "important");
-          el.style.setProperty("visibility", "hidden", "important");
-          el.style.setProperty("pointer-events", "none", "important");
-        }
-      }
-
-      function scrub(doc) {
-        if (!doc) return;
-        doc.querySelectorAll('[class*="viewerBadge"], #GithubIcon').forEach(hideGithubOnly);
-        doc.querySelectorAll('a[href*="github.com"], a[href*="github.dev"]').forEach(hideGithubOnly);
-      }
-
-      function openSidebar(doc) {
-        const selectors = [
-          '[data-testid="collapsedControl"] button',
-          '[data-testid="collapsedControl"]',
-          '[data-testid="stSidebarCollapsedControl"] button',
-          '[data-testid="stSidebarCollapsedControl"]',
-          'button[aria-label*="Open sidebar"]',
-          'button[aria-label*="Close sidebar"]',
-        ];
-        for (const sel of selectors) {
-          const el = doc.querySelector(sel);
-          if (el) { el.click(); return; }
-        }
-      }
-
-      function injectStyles(doc) {
-        if (!doc || doc.getElementById("gov-top-actions-css")) return;
-        const style = doc.createElement("style");
-        style.id = "gov-top-actions-css";
-        style.textContent = `
-          #gov-top-actions{position:fixed;top:0.45rem;right:0.55rem;z-index:999992;
-          display:flex;align-items:center;gap:0.45rem;padding:0.3rem 0.45rem;
-          background:rgba(255,255,255,0.97);border:1px solid #D4DCE8;border-radius:999px;
-          box-shadow:0 2px 12px rgba(26,43,74,0.14)}
-          #gov-top-actions button{font-size:0.78rem;font-weight:700;padding:0.38rem 0.75rem;
-          border-radius:999px;border:1px solid #D4DCE8;background:#fff;color:#1A2B4A;cursor:pointer}
-          #gov-top-actions .gov-share-btn{background:linear-gradient(135deg,#1A2B4A,#2C4A7C);
-          color:#fff;border-color:#C9A227}
-          #gov-share-toast{display:none;font-size:0.72rem;color:#1B5E20;font-weight:600}
-          #gov-share-toast.show{display:inline-block}
-          [data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"]{
-          display:flex!important;visibility:visible!important;pointer-events:auto!important;
-          opacity:1!important;z-index:999991!important}
-        `;
-        doc.head.appendChild(style);
-      }
-
-      function shareApp(doc) {
-        const url = doc.defaultView?.location?.href || window.location.href;
-        const toast = doc.getElementById("gov-share-toast");
-        const copy = (text) => {
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            return navigator.clipboard.writeText(text);
-          }
-          const ta = doc.createElement("textarea");
-          ta.value = text;
-          doc.body.appendChild(ta);
-          ta.select();
-          doc.execCommand("copy");
-          doc.body.removeChild(ta);
-          return Promise.resolve();
-        };
-        copy(url).then(() => {
-          if (toast) {
-            toast.classList.add("show");
-            setTimeout(() => toast.classList.remove("show"), 2200);
-          }
-        });
-      }
-
-      function ensureTopBar(doc) {
-        if (!doc || doc.getElementById("gov-top-actions")) return;
-        const bar = doc.createElement("div");
-        bar.id = "gov-top-actions";
-        bar.innerHTML =
-          '<button type="button" id="gov-open-menu">☰ Menu</button>' +
-          '<button type="button" id="gov-share-link" class="gov-share-btn">📤 Share</button>' +
-          '<span id="gov-share-toast">Link copied!</span>';
-        doc.body.appendChild(bar);
-        doc.getElementById("gov-open-menu").addEventListener("click", () => openSidebar(doc));
-        doc.getElementById("gov-share-link").addEventListener("click", () => shareApp(doc));
-      }
-
-      function run(doc) {
-        if (!doc) return;
-        injectStyles(doc);
-        scrub(doc);
-        ensureTopBar(doc);
-      }
-
-      function boot(doc) {
-        if (!doc || doc.getElementById("gov-ui-boot")) return;
-        const marker = doc.createElement("meta");
-        marker.id = "gov-ui-boot";
-        doc.head.appendChild(marker);
-        run(doc);
-        setInterval(() => run(doc), 800);
-        new MutationObserver(() => run(doc)).observe(doc.documentElement, {
-          childList: true, subtree: true,
-        });
-      }
-
-      [document, window.parent?.document, window.top?.document].forEach((doc) => {
-        try { boot(doc); } catch (e) {}
-      });
-    })();
-    """
+    """Custom Share modal; block Streamlit/GitHub/profile links; hide empty menu."""
+    ui_path = BASE_DIR / "scripts" / "gov-ui.js"
+    ui_script = ui_path.read_text(encoding="utf-8").replace("__APP_TITLE__", APP_NAME)
     st.components.v1.html(f"<script>{ui_script}</script>", height=0, width=0)
 
 
@@ -1575,8 +1385,8 @@ def render_sidebar(config: dict[str, str], files: list[Path]) -> None:
                     **Supported formats:** PDF, DOCX, TXT, MD  
                     **Indexed files:** {len(st.session_state.indexed_files)}
 
-                    **Deployment note:** On Streamlit Cloud, upload files via
-                    GitHub (commit to `data_source/`) or rebuild after redeploy.
+                    **Deployment note:** Upload files to `data_source/` in your
+                    repository, then reboot the app or click **Refresh documents**.
                     """
                 )
                 if st.session_state.ingest_errors:
@@ -1734,7 +1544,7 @@ def initialize_rag(config: dict[str, str], files: list[Path]) -> bool:
                 1. Streamlit Cloud → **Manage app** → **Reboot app**
                 2. Sidebar (Admin) → **Rebuild Knowledge Base**
                 3. Confirm Secrets: `AI_PROVIDER = "groq"` and valid `GROQ_API_KEY`
-                4. Push latest code from GitHub, then reboot again
+                4. Push latest code to your repository, then reboot again
                 """
             )
         return False
