@@ -77,18 +77,32 @@ html, body, [class*="css"] {
 }
 
 .main .block-container {
-    padding-top: 1.5rem;
+    padding-top: 0.5rem !important;
     padding-bottom: 3rem;
     max-width: 920px;
 }
 
+/* Tighten gap between top menu bar and main content */
+header[data-testid="stHeader"] {
+    height: 2.5rem !important;
+    min-height: 2.5rem !important;
+}
+[data-testid="stToolbar"] {
+    top: 0.35rem !important;
+}
+[data-testid="stAppViewContainer"] > .main {
+    padding-top: 0.25rem;
+}
+
 /* Hero header */
 .gov-header {
+    position: relative;
     background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
     border-left: 6px solid var(--gov-gold);
     border-radius: 0 12px 12px 0;
-    padding: 1.75rem 2rem;
-    margin-bottom: 1.5rem;
+    padding: 1.15rem 2rem 1.2rem 2rem;
+    margin-top: 0;
+    margin-bottom: 1.25rem;
     box-shadow: 0 4px 20px rgba(26, 43, 74, 0.15);
 }
 .gov-header h1 {
@@ -98,11 +112,43 @@ html, body, [class*="css"] {
     font-weight: 700;
     margin: 0 0 0.35rem 0;
     letter-spacing: 0.02em;
+    padding-right: 8.5rem;
 }
 .gov-header p {
     color: rgba(255, 255, 255, 0.88);
     margin: 0;
     font-size: 1rem;
+    padding-right: 8.5rem;
+}
+.gov-site-fab {
+    position: absolute;
+    top: 1.35rem;
+    right: 1.25rem;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.42rem 0.9rem;
+    background: rgba(255, 255, 255, 0.12);
+    color: #FFFFFF !important;
+    text-decoration: none !important;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    border: 1.5px solid var(--gov-gold);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+    letter-spacing: 0.02em;
+    transition: transform 0.2s ease, background 0.2s ease;
+    white-space: nowrap;
+}
+.gov-site-fab:hover {
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.2);
+    color: var(--gov-gold-light) !important;
+}
+.gov-site-fab-icon {
+    font-size: 1rem;
+    line-height: 1;
 }
 
 /* Status badges */
@@ -190,7 +236,7 @@ section[data-testid="stSidebar"] {
     border-right: 1px solid var(--gov-border);
 }
 section[data-testid="stSidebar"] .block-container {
-    padding-top: 1.5rem;
+    padding-top: 0.65rem;
 }
 
 .sidebar-title {
@@ -303,37 +349,6 @@ footer { visibility: hidden; }
     height: 0 !important;
     overflow: hidden !important;
     opacity: 0 !important;
-}
-
-/* Custom tharshan.lk shortcut (top-right) */
-.gov-site-fab {
-    position: fixed;
-    top: 0.72rem;
-    right: 0.85rem;
-    z-index: 999990;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.42rem 0.9rem;
-    background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
-    color: #FFFFFF !important;
-    text-decoration: none !important;
-    border-radius: 999px;
-    font-size: 0.8rem;
-    font-weight: 700;
-    border: 1.5px solid var(--gov-gold);
-    box-shadow: 0 3px 14px rgba(26, 43, 74, 0.28);
-    letter-spacing: 0.02em;
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-}
-.gov-site-fab:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 5px 18px rgba(26, 43, 74, 0.34);
-    color: var(--gov-gold-light) !important;
-}
-.gov-site-fab-icon {
-    font-size: 1rem;
-    line-height: 1;
 }
 </style>
 """
@@ -1232,23 +1247,14 @@ def render_header() -> None:
     st.markdown(
         f"""
         <div class="gov-header">
+            <a class="gov-site-fab" href="{DEVELOPER_SITE_URL}" target="_blank" rel="noopener noreferrer"
+               title="Visit tharshan.lk">
+                <span class="gov-site-fab-icon">🌐</span>
+                <span>tharshan.lk</span>
+            </a>
             <h1>🏛️ {APP_NAME}</h1>
             <p>{APP_TAGLINE}</p>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_developer_site_link() -> None:
-    """Fixed shortcut to tharshan.lk in the top-right corner."""
-    st.markdown(
-        f"""
-        <a class="gov-site-fab" href="{DEVELOPER_SITE_URL}" target="_blank" rel="noopener noreferrer"
-           title="Visit tharshan.lk">
-            <span class="gov-site-fab-icon">🌐</span>
-            <span>tharshan.lk</span>
-        </a>
         """,
         unsafe_allow_html=True,
     )
@@ -1738,7 +1744,6 @@ def main() -> None:
         },
     )
     st.markdown(GOVERNMENT_CSS, unsafe_allow_html=True)
-    render_developer_site_link()
     inject_cloud_toolbar_guard()
 
     init_session_state()
