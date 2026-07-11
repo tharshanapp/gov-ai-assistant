@@ -235,16 +235,19 @@ header[data-testid="stHeader"] {
     border: 1px solid var(--gov-border) !important;
 }
 
-/* Sidebar collapse button — always keep visible */
+/* Hide native Streamlit sidebar toggle — custom >> / << button used instead */
 [data-testid="collapsedControl"],
 [data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapseButton"],
 [data-testid="collapsedControl"] button,
 [data-testid="stSidebarCollapsedControl"] button {
-    display: flex !important;
-    visibility: visible !important;
-    pointer-events: auto !important;
-    opacity: 1 !important;
-    z-index: 999991 !important;
+    opacity: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
+    position: absolute !important;
+    left: -9999px !important;
 }
 
 /* Sidebar styling */
