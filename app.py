@@ -1,5 +1,5 @@
 """
-Government Regulatory AI Assistant
+GovKnowledge AI — The Intelligent Knowledge Hub for Government Officers
 Streamlit + LlamaIndex + Ollama (free) or OpenAI
 """
 
@@ -38,6 +38,9 @@ INDEX_CACHE_DIR = BASE_DIR / ".index_cache"
 PERSIST_DIR = INDEX_CACHE_DIR / "storage"
 FINGERPRINT_FILE = INDEX_CACHE_DIR / "corpus.fp"
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
+
+APP_NAME = "GovKnowledge AI"
+APP_TAGLINE = "The Intelligent Knowledge Hub for Government Officers"
 
 SYSTEM_PROMPT = """You are an elite legal and regulatory compliance assistant for public sector officers.
 
@@ -1168,10 +1171,10 @@ def reset_conversation() -> None:
 # ---------------------------------------------------------------------------
 def render_header() -> None:
     st.markdown(
-        """
+        f"""
         <div class="gov-header">
-            <h1>🏛️ Government Regulatory AI Assistant</h1>
-            <p>Official circulars, guidelines &amp; regulations — with verified citations</p>
+            <h1>🏛️ {APP_NAME}</h1>
+            <p>{APP_TAGLINE}</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1191,7 +1194,7 @@ def render_footer() -> None:
                     ✉️ tharsh.ai.dev@gmail.com
                 </a>
                 <div class="gov-footer-divider"></div>
-                <p class="gov-footer-copy">© {year} Government Regulatory AI Assistant · tharshan.lk</p>
+                <p class="gov-footer-copy">© {year} {APP_NAME} · tharshan.lk</p>
             </div>
         </div>
         """,
@@ -1584,7 +1587,7 @@ def render_chat(config: dict[str, str]) -> None:
 # ---------------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(
-        page_title="Government Regulatory AI Assistant",
+        page_title=APP_NAME,
         page_icon="🏛️",
         layout="wide",
         initial_sidebar_state="expanded",
