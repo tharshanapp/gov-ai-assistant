@@ -235,6 +235,66 @@ header[data-testid="stHeader"] {
     border: 1px solid var(--gov-border) !important;
 }
 
+/* Sidebar collapse button — always keep visible */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] button,
+[data-testid="stSidebarCollapsedControl"] button {
+    display: flex !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+    opacity: 1 !important;
+    z-index: 999991 !important;
+}
+
+/* Permanent top action bar (Menu + Share) */
+#gov-top-actions {
+    position: fixed;
+    top: 0.45rem;
+    right: 0.55rem;
+    z-index: 999992;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.3rem 0.45rem;
+    background: rgba(255, 255, 255, 0.97);
+    border: 1px solid var(--gov-border);
+    border-radius: 999px;
+    box-shadow: 0 2px 12px rgba(26, 43, 74, 0.14);
+}
+#gov-top-actions button {
+    font-family: 'Source Sans 3', sans-serif;
+    font-size: 0.78rem;
+    font-weight: 700;
+    padding: 0.38rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid var(--gov-border);
+    background: #FFFFFF;
+    color: var(--gov-navy);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+#gov-top-actions button:hover {
+    background: var(--gov-navy);
+    color: #FFFFFF;
+    border-color: var(--gov-navy);
+}
+#gov-top-actions .gov-share-btn {
+    background: linear-gradient(135deg, var(--gov-navy) 0%, var(--gov-navy-light) 100%);
+    color: #FFFFFF;
+    border-color: var(--gov-gold);
+}
+#gov-share-toast {
+    display: none;
+    font-size: 0.72rem;
+    color: #1B5E20;
+    font-weight: 600;
+    padding: 0.2rem 0.45rem;
+}
+#gov-share-toast.show {
+    display: inline-block;
+}
+
 /* Sidebar styling */
 section[data-testid="stSidebar"] {
     background: linear-gradient(180deg, #F0F4FA 0%, #E8EDF5 100%);
@@ -1265,122 +1325,151 @@ def render_header() -> None:
 
 
 def inject_cloud_toolbar_guard() -> None:
-    """Keep only Share & Star in header; remove GitHub, pencil, Streamlit links."""
-    parent_css = """
-    [class*="viewerBadge"],[class*="ViewerBadge"],#GithubIcon,
-    a[href*="github.com"],a[href*="github.dev"]{display:none!important;
-    visibility:hidden!important;pointer-events:none!important;width:0!important;height:0!important}
-    """
-    guard_script = f"""
-    (function () {{
-      const PARENT_CSS = {parent_css!r};
-
-      function labelOf(el) {{
+    """Safely hide GitHub badges only; protect sidebar & Share controls."""
+    ui_script = """
+    (function () {
+      function labelOf(el) {
         return (
           (el.getAttribute("aria-label") || "") + " " +
           (el.getAttribute("title") || "") + " " +
+          (el.getAttribute("data-testid") || "") + " " +
           (el.textContent || "")
-        ).toLowerCase().trim();
-      }}
+        ).toLowerCase();
+      }
 
-      function isShareOrStar(el) {{
+      function isProtected(el) {
+        if (!el) return true;
         const label = labelOf(el);
-        const text = (el.textContent || "").trim().toLowerCase();
-        return (
-          label.includes("share") || text === "share" ||
-          label.includes("star") || label.includes("favorite") || label.includes("bookmark")
-        );
-      }}
+        const tid = el.getAttribute("data-testid") || "";
+        if (tid.includes("collapsedControl") || tid.includes("Sidebar")) return true;
+        if (tid.includes("stToolbar") || tid.includes("stDecoration")) return true;
+        if (label.includes("sidebar") || label.includes("collapse") || label.includes("expand")) return true;
+        if (label.includes("share") || label.includes("star")) return true;
+        if (el.closest('[data-testid="collapsedControl"]')) return true;
+        if (el.closest('[data-testid="stSidebarCollapsedControl"]')) return true;
+        if (el.closest('[data-testid="stToolbar"]')) return true;
+        if (el.classList.contains("gov-site-fab")) return true;
+        return false;
+      }
 
-      function removeEl(el) {{
-        if (!el || !el.parentNode) return;
-        el.style.setProperty("display", "none", "important");
-        el.style.setProperty("visibility", "hidden", "important");
-        el.style.setProperty("pointer-events", "none", "important");
-        el.remove();
-      }}
+      function hideGithubOnly(el) {
+        if (!el || isProtected(el)) return;
+        const href = (el.href || el.getAttribute("href") || "").toLowerCase();
+        const label = labelOf(el);
+        const isGithub = href.includes("github.com") || href.includes("github.dev");
+        const isBadge = (el.className || "").toLowerCase().includes("viewerbadge");
+        const isFork = label.includes("fork") || label.includes("view source") || label.includes("edit app");
+        if (isGithub || isBadge || isFork) {
+          el.style.setProperty("display", "none", "important");
+          el.style.setProperty("visibility", "hidden", "important");
+          el.style.setProperty("pointer-events", "none", "important");
+        }
+      }
 
-      function injectCss(doc) {{
-        if (!doc || doc.getElementById("gov-toolbar-css")) return;
+      function scrub(doc) {
+        if (!doc) return;
+        doc.querySelectorAll('[class*="viewerBadge"], #GithubIcon').forEach(hideGithubOnly);
+        doc.querySelectorAll('a[href*="github.com"], a[href*="github.dev"]').forEach(hideGithubOnly);
+      }
+
+      function openSidebar(doc) {
+        const selectors = [
+          '[data-testid="collapsedControl"] button',
+          '[data-testid="collapsedControl"]',
+          '[data-testid="stSidebarCollapsedControl"] button',
+          '[data-testid="stSidebarCollapsedControl"]',
+          'button[aria-label*="Open sidebar"]',
+          'button[aria-label*="Close sidebar"]',
+        ];
+        for (const sel of selectors) {
+          const el = doc.querySelector(sel);
+          if (el) { el.click(); return; }
+        }
+      }
+
+      function injectStyles(doc) {
+        if (!doc || doc.getElementById("gov-top-actions-css")) return;
         const style = doc.createElement("style");
-        style.id = "gov-toolbar-css";
-        style.textContent = PARENT_CSS;
+        style.id = "gov-top-actions-css";
+        style.textContent = `
+          #gov-top-actions{position:fixed;top:0.45rem;right:0.55rem;z-index:999992;
+          display:flex;align-items:center;gap:0.45rem;padding:0.3rem 0.45rem;
+          background:rgba(255,255,255,0.97);border:1px solid #D4DCE8;border-radius:999px;
+          box-shadow:0 2px 12px rgba(26,43,74,0.14)}
+          #gov-top-actions button{font-size:0.78rem;font-weight:700;padding:0.38rem 0.75rem;
+          border-radius:999px;border:1px solid #D4DCE8;background:#fff;color:#1A2B4A;cursor:pointer}
+          #gov-top-actions .gov-share-btn{background:linear-gradient(135deg,#1A2B4A,#2C4A7C);
+          color:#fff;border-color:#C9A227}
+          #gov-share-toast{display:none;font-size:0.72rem;color:#1B5E20;font-weight:600}
+          #gov-share-toast.show{display:inline-block}
+          [data-testid="collapsedControl"],[data-testid="stSidebarCollapsedControl"]{
+          display:flex!important;visibility:visible!important;pointer-events:auto!important;
+          opacity:1!important;z-index:999991!important}
+        `;
         doc.head.appendChild(style);
-      }}
+      }
 
-      function scrubHeaderWhitelist(doc) {{
-        const header = doc.querySelector('[data-testid="stHeader"]');
-        if (!header) return;
+      function shareApp(doc) {
+        const url = doc.defaultView?.location?.href || window.location.href;
+        const toast = doc.getElementById("gov-share-toast");
+        const copy = (text) => {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            return navigator.clipboard.writeText(text);
+          }
+          const ta = doc.createElement("textarea");
+          ta.value = text;
+          doc.body.appendChild(ta);
+          ta.select();
+          doc.execCommand("copy");
+          doc.body.removeChild(ta);
+          return Promise.resolve();
+        };
+        copy(url).then(() => {
+          if (toast) {
+            toast.classList.add("show");
+            setTimeout(() => toast.classList.remove("show"), 2200);
+          }
+        });
+      }
 
-        const clickables = [...header.querySelectorAll("a, button, [role='button']")];
-        let shareIdx = -1;
-        let starIdx = -1;
+      function ensureTopBar(doc) {
+        if (!doc || doc.getElementById("gov-top-actions")) return;
+        const bar = doc.createElement("div");
+        bar.id = "gov-top-actions";
+        bar.innerHTML =
+          '<button type="button" id="gov-open-menu">☰ Menu</button>' +
+          '<button type="button" id="gov-share-link" class="gov-share-btn">📤 Share</button>' +
+          '<span id="gov-share-toast">Link copied!</span>';
+        doc.body.appendChild(bar);
+        doc.getElementById("gov-open-menu").addEventListener("click", () => openSidebar(doc));
+        doc.getElementById("gov-share-link").addEventListener("click", () => shareApp(doc));
+      }
 
-        clickables.forEach((el, idx) => {{
-          if (labelOf(el).includes("share") || (el.textContent || "").trim().toLowerCase() === "share") {{
-            shareIdx = idx;
-          }}
-          if (labelOf(el).includes("star") || labelOf(el).includes("favorite")) {{
-            starIdx = idx;
-          }}
-        }});
-
-        const keep = new Set([shareIdx, starIdx].filter((i) => i >= 0));
-        if (keep.size === 0 && clickables.length >= 2) {{
-          keep.add(0);
-          keep.add(1);
-        }}
-
-        clickables.forEach((el, idx) => {{
-          if (!keep.has(idx)) removeEl(el);
-        }});
-      }}
-
-      function scrubGlobal(doc) {{
+      function run(doc) {
         if (!doc) return;
+        injectStyles(doc);
+        scrub(doc);
+        ensureTopBar(doc);
+      }
 
-        doc.querySelectorAll(
-          '[class*="viewerBadge"], [class*="ViewerBadge"], #GithubIcon'
-        ).forEach(removeEl);
-
-        doc.querySelectorAll('a[href*="github.com"], a[href*="github.dev"]').forEach(removeEl);
-
-        doc.querySelectorAll('a[href*="streamlit.io"], a[href*="streamlit.com"]').forEach((el) => {{
-          if (!isShareOrStar(el)) removeEl(el);
-        }});
-
-        doc.querySelectorAll('[data-testid="stHeader"] a, [data-testid="stHeader"] button').forEach((el) => {{
-          if (!isShareOrStar(el)) removeEl(el);
-        }});
-
-        scrubHeaderWhitelist(doc);
-      }}
-
-      function runOn(doc) {{
-        if (!doc) return;
-        injectCss(doc);
-        scrubGlobal(doc);
-      }}
-
-      function boot(doc) {{
-        if (!doc || doc.getElementById("gov-toolbar-runner")) return;
-        runOn(doc);
+      function boot(doc) {
+        if (!doc || doc.getElementById("gov-ui-boot")) return;
         const marker = doc.createElement("meta");
-        marker.id = "gov-toolbar-runner";
+        marker.id = "gov-ui-boot";
         doc.head.appendChild(marker);
-        setInterval(() => runOn(doc), 300);
-        new MutationObserver(() => runOn(doc)).observe(doc.documentElement, {{
-          childList: true,
-          subtree: true,
-        }});
-      }}
+        run(doc);
+        setInterval(() => run(doc), 800);
+        new MutationObserver(() => run(doc)).observe(doc.documentElement, {
+          childList: true, subtree: true,
+        });
+      }
 
-      [document, window.parent?.document, window.top?.document].forEach((doc) => {{
-        try {{ boot(doc); }} catch (e) {{}}
-      }});
-    }})();
+      [document, window.parent?.document, window.top?.document].forEach((doc) => {
+        try { boot(doc); } catch (e) {}
+      });
+    })();
     """
-    st.components.v1.html(f"<script>{guard_script}</script>", height=0, width=0)
+    st.components.v1.html(f"<script>{ui_script}</script>", height=0, width=0)
 
 
 def render_footer() -> None:
