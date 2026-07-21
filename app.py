@@ -39,7 +39,13 @@ PERSIST_DIR = INDEX_CACHE_DIR / "storage"
 FINGERPRINT_FILE = INDEX_CACHE_DIR / "corpus.fp"
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md"}
 
-APP_NAME = "GovKnowledge AI"
+GROQ_VISION_MODEL_DEFAULT = "qwen/qwen3.6-27b"
+GROQ_VISION_MODEL_FALLBACKS = (
+    "qwen/qwen3.6-27b",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+)
+
 APP_TAGLINE = "The Intelligent Knowledge Hub for Government Officers"
 DEVELOPER_SITE_URL = "https://tharshan.lk"
 
@@ -411,9 +417,7 @@ def get_config() -> dict[str, str]:
         "embed_model": _get_secret("EMBED_MODEL", "text-embedding-3-small"),
         "groq_api_key": _get_secret("GROQ_API_KEY"),
         "groq_model": _get_secret("GROQ_MODEL", "llama-3.1-8b-instant"),
-        "groq_vision_model": _get_secret(
-            "GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"
-        ),
+        "groq_vision_model": _get_secret("GROQ_VISION_MODEL", GROQ_VISION_MODEL_DEFAULT),
         "fastembed_model": _get_secret("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5"),
         "ollama_model": _get_secret("OLLAMA_MODEL", "llama3.2"),
         "ollama_embed_model": _get_secret("OLLAMA_EMBED_MODEL", "nomic-embed-text"),
@@ -587,8 +591,49 @@ def _local_ocr_available() -> bool:
         return False
 
 
+def _is_model_not_found_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "model_not_found" in msg or "does not exist" in msg or "404" in msg
+
+
+def _groq_vision_model_candidates(config: dict[str, str]) -> list[str]:
+    preferred = (config.get("groq_vision_model") or GROQ_VISION_MODEL_DEFAULT).strip()
+    candidates = [preferred]
+    for model in GROQ_VISION_MODEL_FALLBACKS:
+        if model not in candidates:
+            candidates.append(model)
+    return candidates
+
+
+def _groq_vision_page_text(client: Any, model: str, encoded_png: str) -> str:
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract ALL text from this official government document image. "
+                            "Return only the extracted text. Preserve headings and numbering."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{encoded_png}"},
+                    },
+                ],
+            }
+        ],
+        temperature=0.0,
+        max_tokens=4096,
+    )
+    return (response.choices[0].message.content or "").strip()
+
+
 def _extract_pdf_with_groq_vision(path: Path) -> str:
-    """Cloud-friendly OCR using Groq Vision (works on Streamlit Cloud)."""
+    """Cloud-friendly OCR using Groq Vision (works on Streamlit Cloud / Render)."""
     import base64
 
     import fitz
@@ -604,38 +649,39 @@ def _extract_pdf_with_groq_vision(path: Path) -> str:
     )
     doc = fitz.open(str(path))
     parts: list[str] = []
+    active_model: str | None = None
+    model_errors: list[str] = []
     try:
         for page in doc:
             png_bytes = page.get_pixmap(dpi=150).tobytes("png")
             encoded = base64.b64encode(png_bytes).decode("ascii")
-            response = client.chat.completions.create(
-                model=config["groq_vision_model"],
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    "Extract ALL text from this official government document image. "
-                                    "Return only the extracted text. Preserve headings and numbering."
-                                ),
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{encoded}"},
-                            },
-                        ],
-                    }
-                ],
-                temperature=0.0,
-                max_tokens=4096,
-            )
-            content = (response.choices[0].message.content or "").strip()
-            if content:
-                parts.append(content)
+            page_text = ""
+            models_to_try = [active_model] if active_model else _groq_vision_model_candidates(config)
+            for model in models_to_try:
+                if not model:
+                    continue
+                try:
+                    page_text = _groq_vision_page_text(client, model, encoded)
+                    if active_model != model:
+                        logger.info("Groq Vision OCR using model %s for %s", model, path.name)
+                    active_model = model
+                    break
+                except Exception as exc:
+                    if _is_model_not_found_error(exc):
+                        model_errors.append(f"{model}: unavailable")
+                        continue
+                    raise
+            if page_text:
+                parts.append(page_text)
     finally:
         doc.close()
+
+    if not parts and model_errors:
+        logger.warning(
+            "Groq Vision OCR failed for %s. Tried: %s",
+            path.name,
+            "; ".join(dict.fromkeys(model_errors)),
+        )
     return "\n\n".join(parts)
 
 
