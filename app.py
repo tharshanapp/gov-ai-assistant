@@ -46,6 +46,7 @@ GROQ_VISION_MODEL_FALLBACKS = (
     "meta-llama/llama-4-scout-17b-16e-instruct",
 )
 
+APP_NAME = "GovKnowledge AI"
 APP_TAGLINE = "The Intelligent Knowledge Hub for Government Officers"
 DEVELOPER_SITE_URL = "https://tharshan.lk"
 
